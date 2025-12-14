@@ -1,0 +1,5 @@
+<launch>
+  <node pkg="cone_avoidance" type="cone_avoidance" name="" output="screen">
+    <rosparam command="load" file="$(find cone_avoidance)/config/cone_avoidance.yaml" />
+  </node>
+</launch>
