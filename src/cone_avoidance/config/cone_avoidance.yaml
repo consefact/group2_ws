@@ -1,0 +1,10 @@
+err_max : 0.5
+if_debug : 1
+
+
+target_x : 5.0  
+target_y : 0.0  
+
+target_yaw : 0.0
+UAV_radius : 0.3
+time_final : 70.0
