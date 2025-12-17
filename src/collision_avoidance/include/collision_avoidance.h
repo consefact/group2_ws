@@ -18,7 +18,7 @@
 #include <std_msgs/String.h>
 #include <std_msgs/Empty.h>
 #include <std_msgs/Int32.h>
-#include <livox_ros_driver/CustomMsg.h>
+#include <livox_ros_driver2/CustomMsg.h>
 
 using namespace std;
 
@@ -52,6 +52,9 @@ typedef struct point
 {
     float x;
     float y;
+    point():x(0),y(0){}
+    template<typename T>
+    point(T x,T y):x(static_cast<float>(x)),y(static_cast<float>(y)){}
 } point;
 point target;
 
@@ -65,6 +68,8 @@ struct Vel
 {
     float x;
     float y;
+    template<typename T>
+    Vel(T x,T y):x(static_cast<float>( x )),y(static_cast<float>( y )){}
 };
 std::vector<point> current_pos;
 std::vector<Vel> current_vel;
@@ -230,7 +235,7 @@ void cal_min_distance()
 
 *************************************************************************/
 
-void livox_custom_cb(const livox_ros_driver::CustomMsg::ConstPtr &livox_msg)
+void livox_custom_cb(const livox_ros_driver2::CustomMsg::ConstPtr &livox_msg)
 {
     // 初始化bins
     // ROS_INFO("Received Livox point cloud with %d points", livox_msg->point_num);
@@ -243,7 +248,7 @@ void livox_custom_cb(const livox_ros_driver::CustomMsg::ConstPtr &livox_msg)
     // 遍历Livox自定义消息中的点
     for (int i = 0; i < total_points; i++)
     {
-        const livox_ros_driver::CustomPoint &point = livox_msg->points[i];
+        const livox_ros_driver2::CustomPoint &point = livox_msg->points[i];
 
         float x = point.x;
         float y = point.y;

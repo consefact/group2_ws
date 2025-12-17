@@ -19,7 +19,7 @@ find_package(catkin REQUIRED COMPONENTS
   sensor_msgs
   geometry_msgs
   message_generation
-  livox_ros_driver
+  livox_ros_driver2
 )
 catkin_package(
   INCLUDE_DIRS include

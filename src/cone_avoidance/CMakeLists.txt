@@ -7,6 +7,11 @@ project(cone_avoidance)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+set(CMAKE_BUILD_TYPE Release)
+add_compile_options(-O3 -march=native -mtune=native)
+# Jetson平台还可以添加NEON指令集优化：
+# add_compile_options(-mfpu=neon -mfloat-abi=hard)
+
 ## Find catkin macros and libraries
 ## if COMPONENTS list like find_package(catkin REQUIRED COMPONENTS xyz)
 ## is used, also find other catkin packages

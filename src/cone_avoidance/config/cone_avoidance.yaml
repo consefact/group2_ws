@@ -1,0 +1,25 @@
+
+err_max : 0.5
+if_debug : 1
+zero_plane_height : 0.2
+height_threshold : 0.05
+min_range : 0.1
+max_range : 30.0
+num_bins : 360
+
+R_outside : 1.5
+R_inside : 0.8
+p_R : 3.0 
+p_r : 8.0
+p_xy : 0.2
+vel_collision_max : 0.60
+vel_track_max : 0.5
+vel_sp_max : 0.55
+
+target_x : 4.0
+target_y : 0.0
+
+mission_cruise_timeout : 10.0  # 普通巡航超时阈值（秒）
+collision_cruise_timeout : 30.0 # 避障巡航超时阈值（秒）
+
+final_r : 4.0  # 终点限制圆半径
