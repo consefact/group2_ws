@@ -63,8 +63,7 @@ int main(int argc, char **argv)
     nh.param<float>("UAV_radius", UAV_radius, 0.3f);
     nh.param<float>("time_final", time_final, 70.0f);
 
-    ros::Timer timer1 = nh.createTimer(ros::Duration(2.0), time_c_b_pos);
-    ros::Timer timer2 = nh.createTimer(ros::Duration(2.0), time_c_b_vel);
+
     print_param();
 
     int choice = 0;

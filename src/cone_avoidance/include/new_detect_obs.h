@@ -17,7 +17,6 @@
 #include<Eigen/StdVector>
 
 
-extern point target;
 extern float target_x;
 extern float target_y;
 extern ros::NodeHandle nh;

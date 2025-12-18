@@ -28,8 +28,8 @@ using namespace std;
 
 mavros_msgs::PositionTarget setpoint_raw;
 
-std::vector<Eigen::Vector2f> current_pos; // 无人机历史位置（二维）
-std::vector<Eigen::Vector2f> current_vel; // 无人机历史速度（二维）
+Eigen::Vector2f current_pos; // 无人机历史位置（二维）
+Eigen::Vector2f current_vel; // 无人机历史速度（二维）
 
 /************************************************************************
 函数 1：无人机状态回调函数
@@ -60,13 +60,13 @@ void local_pos_cb(const nav_msgs::Odometry::ConstPtr &msg)
     tf::quaternionMsgToTF(local_pos.pose.pose.orientation, quat);
     tf::Matrix3x3(quat).getRPY(roll, pitch, yaw);
     // 【修改1】存储Eigen::Vector2f格式的位置（替代原point结构体）
-    current_pos.push_back(Eigen::Vector2f(local_pos.pose.pose.position.x, local_pos.pose.pose.position.y));
+    Eigen::Vector2f  current_pos((local_pos.pose.pose.position.x, local_pos.pose.pose.position.y));
 
     // 【修改2】存储Eigen::Vector2f格式的速度（替代原Vel结构体）
     tf::Vector3 body_vel(local_pos.twist.twist.linear.x, local_pos.twist.twist.linear.y, local_pos.twist.twist.linear.z);
     tf::Matrix3x3 rot_matrix(quat);
     tf::Vector3 world_vel = rot_matrix * body_vel;
-    current_vel.push_back(Eigen::Vector2f(world_vel.x(), world_vel.y()));
+    Eigen::Vector2f current_vel((world_vel.x(), world_vel.y()));
 
     if (flag_init_position == false && (local_pos.pose.pose.position.z > 0.1)) // 优化初始化阈值
     {
@@ -180,7 +180,6 @@ const float W_free = 0.4;
 
 
 
-std::vector<Obstacle> obstacles;
 /**
  * @brief 基于 Control Barrier Function (CBF) 的一阶速度避障控制器
  *
@@ -209,7 +208,9 @@ std::vector<Obstacle> obstacles;
  */
 Eigen::Vector2f applyCBF(
     const Eigen::Vector2f &target,
-    std::vector<Eigen::Vector2f> obs_pos const std::vector<Obstacle> &obstacles,
+    const Eigen::Vector2f &UAV_pos,
+    const Eigen::Vector2f &UAV_vel,
+    const std::vector<Obstacle> &obstacles,
     float UAV_radius)
 {
     /* ================= 1. 名义控制：指向目标 ================= */
@@ -354,7 +355,7 @@ bool cone_avoidance_movement(float target_x, float target_y, float target_z,
     Eigen::Vector2f UAV_vel = Eigen::Vector2f::Zero(); // 默认0
     if (!current_vel.empty())
     {
-        UAV_vel = current_vel.back(); // 直接取Eigen::Vector2f（无需转换）
+        Eigen::Vector2f  UAV_vel = current_vel; // 直接取Eigen::Vector2f（无需转换）
     }
 
     // 3.3 目标点（二维，绝对坐标，Eigen格式）
