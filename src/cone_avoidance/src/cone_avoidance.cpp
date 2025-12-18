@@ -13,13 +13,7 @@ float target_z = ALTITUDE; // 目标点z高度（米）
 float target_yaw = 0.0f;   // 目标偏航角（弧度）
 float UAV_radius = 0.3f;   // 无人机等效半径（米）
 float time_final = 70.0f;  // 超时时间（秒）
-float ALPHA = 2.0;
-float MAX_SPEED = 2.0;
-float OBS_EPS = 0.1;
-float KV = 0.2;
-float KN = 0.1;
-float W_goal = 0.8;
-float W_free = 0.2;
+
 
 void print_param()
 {
