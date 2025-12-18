@@ -352,11 +352,7 @@ bool cone_avoidance_movement(float target_x, float target_y, float target_z,
     Eigen::Vector2f UAV_pos(local_pos.pose.pose.position.x, local_pos.pose.pose.position.y);
 
     // 3.2 无人机当前速度（二维，Eigen格式，取最新值）
-    Eigen::Vector2f UAV_vel = Eigen::Vector2f::Zero(); // 默认0
-    if (!current_vel.empty())
-    {
-        Eigen::Vector2f  UAV_vel = current_vel; // 直接取Eigen::Vector2f（无需转换）
-    }
+    Eigen::Vector2f UAV_vel = current_vel;
 
     // 3.3 目标点（二维，绝对坐标，Eigen格式）
     Eigen::Vector2f target(abs_target_x, abs_target_y);
