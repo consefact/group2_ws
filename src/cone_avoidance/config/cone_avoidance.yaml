@@ -8,3 +8,10 @@ target_y : 0.0
 target_yaw : 0.0
 UAV_radius : 0.3
 time_final : 70.0
+ALPHA : 2.0
+MAX_SPEED : 2.0
+OBS_EPS : 0.1
+KV : 0.15
+KN : 0.05
+W_goal : 0.8
+W_free : 0.2

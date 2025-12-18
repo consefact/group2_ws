@@ -60,13 +60,13 @@ void local_pos_cb(const nav_msgs::Odometry::ConstPtr &msg)
     tf::quaternionMsgToTF(local_pos.pose.pose.orientation, quat);
     tf::Matrix3x3(quat).getRPY(roll, pitch, yaw);
     // 【修改1】存储Eigen::Vector2f格式的位置（替代原point结构体）
-    Eigen::Vector2f  current_pos((local_pos.pose.pose.position.x, local_pos.pose.pose.position.y));
+    Eigen::Vector2f  current_pos(local_pos.pose.pose.position.x, local_pos.pose.pose.position.y);
 
     // 【修改2】存储Eigen::Vector2f格式的速度（替代原Vel结构体）
     tf::Vector3 body_vel(local_pos.twist.twist.linear.x, local_pos.twist.twist.linear.y, local_pos.twist.twist.linear.z);
     tf::Matrix3x3 rot_matrix(quat);
     tf::Vector3 world_vel = rot_matrix * body_vel;
-    Eigen::Vector2f current_vel((world_vel.x(), world_vel.y()));
+    Eigen::Vector2f current_vel(world_vel.x(), world_vel.y());
 
     if (flag_init_position == false && (local_pos.pose.pose.position.z > 0.1)) // 优化初始化阈值
     {

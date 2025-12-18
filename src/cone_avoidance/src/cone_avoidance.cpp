@@ -13,8 +13,13 @@ float target_z = ALTITUDE; // 目标点z高度（米）
 float target_yaw = 0.0f;   // 目标偏航角（弧度）
 float UAV_radius = 0.3f;   // 无人机等效半径（米）
 float time_final = 70.0f;  // 超时时间（秒）
-
-
+float ALPHA = 2.0;
+float MAX_SPEED = 2.0;
+float OBS_EPS = 0.1;
+float KV = 0.2;
+float KN = 0.1;
+float W_goal = 0.8;
+float W_free = 0.2;
 
 void print_param()
 {
@@ -63,6 +68,13 @@ int main(int argc, char **argv)
     nh.param<float>("UAV_radius", UAV_radius, 0.3f);
     nh.param<float>("time_final", time_final, 70.0f);
 
+    nh.param<float>("ALPHA", ALPHA, 2.0f);
+    nh.param<float>("MAX_SPEED", MAX_SPEED, 1.0f);
+    nh.param<float>("OBS_EPS", OBS_EPS, 0.1f);
+    nh.param<float>("KV", KV, 0.2f);
+    nh.param<float>("KN", KN, 0.05f);
+    nh.param<float>("W_goal", W_goal, 0.8f);
+    nh.param<float>("W_free", W_free, 0.2f);
 
     print_param();
 
