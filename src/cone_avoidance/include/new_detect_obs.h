@@ -14,6 +14,7 @@
 #include<assert.h>
 #include<visualization_msgs/MarkerArray.h>
 #include<std_msgs/Header.h>
+#include<Eigen/StdVector>
 
 
 extern point target;
@@ -71,14 +72,16 @@ public:
                 publisher_initialized = true;
             }
 
+        if (!cloud_world) cloud_world.reset(new pcl::PointCloud<pcl::PointXYZ>);
+        if (!cloud_voxel) cloud_voxel.reset(new pcl::PointCloud<pcl::PointXYZ>);
+
         convertLivoxToPCL(msg, cloud_world);
         
         
         // 3. 体素滤波并投影到XY平面
         voxelFilterAndProject(cloud_world, cloud_voxel);
         
-        // // 4. 筛选密集体素(障碍物候选)
-        // std::vector<pcl::PointCloud<pcl::PointXYZ>::Ptr> obstacle_candidates;
+        // // // 4. 筛选密集体素(障碍物候选)
         filterDenseVoxels(cloud_voxel, cloud_dense);
         
         euclideanClustering(cloud_dense,clusters);
@@ -96,9 +99,10 @@ public:
             float radius;
             
             if (validateAndFitObstacle(cluster, drone_pos, target_pos, center, radius)) {
-                // 半径过滤（避免过小/过大）
+        //         // 半径过滤（避免过小/过大）
                 if (radius >= min_obstacle_radius_ && radius <= max_obstacle_radius_) {
                     obstacles.push_back({id++, center, radius});
+        // ROS_INFO("do it");
                 }
             }
         }
@@ -142,10 +146,6 @@ private:
         cloud_dense.reset(new pcl::PointCloud<pcl::PointXYZ>);
         cloud_cluster.reset(new pcl::PointCloud<pcl::PointXYZ>);
         cluster_tree.reset(new pcl::search::KdTree<pcl::PointXYZ>);
-        cloud_world->reserve(24000);
-        cloud_voxel->reserve(10000);
-        cloud_dense->reserve(3000);
-        cloud_cluster->reserve(1000);
         voxel_grid.setLeafSize(voxel_size_,voxel_size_,voxel_size_);
     }
     detect_obs(const detect_obs&)=delete;
@@ -159,6 +159,8 @@ private:
         const size_t point_num = livox_msg->point_num;
         pcl_cloud->is_dense = true;
 
+        float plx=local_pos.pose.pose.position.x;
+        float ply=local_pos.pose.pose.position.y;
         const livox_ros_driver::CustomPoint* livox_points = livox_msg->points.data();
         pcl::PointXYZ* pcl_points = pcl_cloud->points.data();
 
@@ -169,8 +171,8 @@ private:
             if(livox_points[i].z>=-height_threshold_value&&livox_points[i].z<=height_threshold_value){
                 float x = livox_points[i].x;
                 float y = livox_points[i].y;
-                float px = x * cy - y * sy;
-                float py = x * sy + y * cy;
+                float px = x * cy - y * sy+plx;
+                float py = x * sy + y * cy+ply;
                 pcl_cloud->push_back({px,py,0});
             }
         }
@@ -180,7 +182,7 @@ private:
     // 体素滤波并投影到XY平面
     void voxelFilterAndProject(const pcl::PointCloud<pcl::PointXYZ>::Ptr& input,
                               pcl::PointCloud<pcl::PointXYZ>::Ptr& output) {
-        
+        output->clear();
         voxel_grid.setInputCloud(input);
         voxel_grid.filter(*output);
                               }
