@@ -16,8 +16,9 @@
 #include<std_msgs/Header.h>
 
 
-extern float target_x;
-extern float target_y;
+extern point target;
+float target_x{target.x};
+float target_y{target.y};
 extern ros::NodeHandle nh;
 extern nav_msgs::Odometry local_pos;
 extern double yaw;
@@ -26,18 +27,18 @@ extern float init_position_z_take_off;
 
 struct Obstacle{
     int id;
-    Eigen::Vector2f center;
+    Eigen::Vector2f position;
     float radius;
 };
 std::vector<Obstacle> obstacles;
 
 constexpr float height_threshold_value{0.05};
-const float voxel_size_{0.05f};           // 体素滤波尺寸
+const float voxel_size_{0.04f};           // 体素滤波尺寸
 const float radius{0.5f};
 const int min_neighbors{3};
 int max_cluster_size{150};
-float min_obstacle_radius_;  // 最小障碍物半径
-float max_obstacle_radius_;  // 最大障碍物半径
+float min_obstacle_radius_{0.1f};  // 最小障碍物半径
+float max_obstacle_radius_{3.f};  // 最大障碍物半径
 
 class detect_obs{
 
@@ -104,6 +105,9 @@ public:
         
         static int log_count = 0;
         if (if_debug == 1 && ++log_count % 10 == 0) {
+            ROS_INFO("Drone: (%.2f, %.2f), Target: (%.2f, %.2f)", 
+                    local_pos.pose.pose.position.x, local_pos.pose.pose.position.y,
+                    target_x, target_y);
             ROS_INFO("总共%d，接收：%lu，体素：%lu，密集：%lu，簇数量：%lu", msg->point_num, cloud_world->size(),cloud_voxel->size(),cloud_dense->size(),clusters.size());
             ROS_INFO("=== 障碍物列表 (共 %zu 个) ===", clusters.size());
             for (size_t i = 0; i < clusters.size(); ++i) {
@@ -117,9 +121,19 @@ public:
                 ROS_INFO("  簇 %zu: 中心(%.2f, %.2f), 点数=%zu",
                         i, cx, cy, clusters[i]->size());
             }
-            log_count = 0;
+            ROS_INFO("=== 最终障碍物列表 (共 %zu 个) ===", obstacles.size());
+            for (size_t i = 0; i < obstacles.size(); ++i) {
+                const auto& obs = obstacles[i];
+                ROS_INFO("  障碍物 %d: 位置(%.2f, %.2f), 半径=%.2fm",
+                        obs.id,
+                        obs.position.x(),
+                        obs.position.y(),
+                        obs.radius);
+                log_count = 0;
+            }
         }
     }
+        
 private:
 
     detect_obs(){
@@ -204,10 +218,12 @@ private:
         ec.setMaxClusterSize(10000);       // 最大点数（防墙体）
         ec.setSearchMethod(cluster_tree);
         ec.setInputCloud(input);
-        ec.extract(cluster_indices);
+        
+        std::vector<pcl::PointIndices> local_cluster_indices;
+        ec.extract(local_cluster_indices);
 
         // 转换索引为点云
-        for (const auto& indices : cluster_indices) {
+        for (const auto& indices : local_cluster_indices) {
             if(indices.indices.size()>max_cluster_size){
                 continue;
             }
@@ -295,9 +311,15 @@ private:
     bool segmentsIntersect(
         const Eigen::Vector2f& p1, const Eigen::Vector2f& p2,
         const Eigen::Vector2f& q1, const Eigen::Vector2f& q2) {
-        
+        if (!std::isfinite(p1.x()) || !std::isfinite(p1.y()) ||
+        !std::isfinite(p2.x()) || !std::isfinite(p2.y()) ||
+        !std::isfinite(q1.x()) || !std::isfinite(q1.y()) ||
+        !std::isfinite(q2.x()) || !std::isfinite(q2.y())) {
+        return false;
+    }
         auto ccw = [](const Eigen::Vector2f& a, const Eigen::Vector2f& b, const Eigen::Vector2f& c) {
-            return (c.y() - a.y()) * (b.x() - a.x()) > (b.y() - a.y()) * (c.x() - a.x());
+            float val=(c.y() - a.y()) * (b.x() - a.x()) > (b.y() - a.y()) * (c.x() - a.x());
+            return val>0;
         };
         
         return ccw(p1, q1, q2) != ccw(p2, q1, q2) && ccw(p1, p2, q1) != ccw(p1, p2, q2);
@@ -372,17 +394,22 @@ private:
         Eigen::Vector2f& center,
         float& radius) {
         
+
         if (cluster->empty()) return false;
-        
+
+        if (cluster->size() <= 10) {
+            fitMinimumEnclosingCircle(cluster, center, radius);
+            return true;
+        }
+
         // 1. 计算圆形度
         Eigen::Vector2f temp_center;
         float temp_radius, circularity;
         computeCircularity(cluster, temp_center, temp_radius, circularity);
-        
+
         // 2. 弧形障碍物：直接接受
-        if (circularity < 0.35f) {
-            center = temp_center;
-            radius = temp_radius;
+        if (circularity < 0.6f) {
+            fitMinimumEnclosingCircle(cluster, center, radius);
             return true;
         }
         
@@ -405,18 +432,31 @@ private:
         
         center = Eigen::Vector2f(0, 0);
         for (const auto& pt : cluster->points) {
+            if(!std::isfinite(pt.x)||!std::isfinite(pt.y))continue;
             center.x() += pt.x;
             center.y() += pt.y;
+        }
+        if(cluster->size()==0){
+            circularity=10.0f;
+            radius=0;
+            return;
         }
         center /= static_cast<float>(cluster->size());
         
         std::vector<float> radii;
         for (const auto& pt : cluster->points) {
+            if (!std::isfinite(pt.x)|| !std::isfinite(pt.y)) continue;
             float dx = pt.x - center.x();
             float dy = pt.y - center.y();
             radii.push_back(std::sqrt(dx*dx + dy*dy));
         }
-        
+
+        if (radii.empty()) {
+            circularity = 10.0f;
+            radius = 0;
+            return;
+        }
+
         radius = 0;
         for (float r : radii) radius += r;
         radius /= radii.size();
