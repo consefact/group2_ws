@@ -170,13 +170,7 @@ bool precision_land()
  */
 
 // CBF 参数
-const float ALPHA = 2.0;
-const float MAX_SPEED = 2.0;
-const float OBS_EPS = 0.1;
-const float KV = 0.2;
-const float KN = 0.1;
-const float W_goal = 0.6;
-const float W_free = 0.4;
+
 
 
 
