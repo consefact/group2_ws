@@ -26,7 +26,8 @@ extern double yaw;
 extern float if_debug;
 extern float init_position_z_take_off;
 
-struct Obstacle{
+struct Obstacle
+{
     int id;
     Eigen::Vector2f position;
     float radius;

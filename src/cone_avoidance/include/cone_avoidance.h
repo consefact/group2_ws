@@ -178,11 +178,7 @@ const float KN = 0.1;
 const float W_goal = 0.6;
 const float W_free = 0.4;
 
-struct Obstacle
-{
-    Eigen::Vector2f position;
-    float radius;
-};
+
 
 std::vector<Obstacle> obstacles;
 /**
@@ -365,7 +361,7 @@ bool cone_avoidance_movement(float target_x, float target_y, float target_z,
     Eigen::Vector2f target(abs_target_x, abs_target_y);
 
     // 3.4 障碍物列表（通过Livox回调获取点列，转换为Obstacle）
-    std::vector<Obstacle> obstacles = livox_cb_wrapper();
+    
 
     // 3.5 无人机自身半径（传入参数）
 
