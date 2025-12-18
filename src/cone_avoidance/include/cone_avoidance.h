@@ -1,5 +1,6 @@
 #include <string>
 #include <vector>
+#include"new_detect_obs.h"
 #include <ros/ros.h>
 #include <geometry_msgs/PoseStamped.h>
 #include <geometry_msgs/Point.h>
@@ -297,91 +298,6 @@ Eigen::Vector2f applyCBF(
     return u_ref;
 }
 
-// Livox雷达回调函数声明（用户说明：返回std::vector<Eigen::Vector2f> obs_pos）
-std::vector<Eigen::Vector2f> livox_custom_cb(const livox_ros_driver::CustomMsg::ConstPtr &msg);
-// Livox回调包装函数（转换点云为Obstacle列表）
-std::vector<Obstacle> livox_cb_wrapper();
-/************************************************************************
-函数 6: Livox雷达回调包装函数
-功能：将Livox回调返回的Eigen点列转换为CBF所需的Obstacle列表
-返回值：包含激光点云+圆锥离散的障碍物列表
-*************************************************************************/
-std::vector<Obstacle> livox_cb_wrapper()
-{
-    std::vector<Obstacle> all_obstacles;
-
-    // ----------------- 1. 接入Livox点云（用户提供的回调） -----------------
-    // 【注意】需确保livox_custom_cb已订阅话题并返回有效点列
-    // 临时存储Livox返回的障碍物点列（std::vector<Eigen::Vector2f>）
-    static std::vector<Eigen::Vector2f> livox_obs_pos;
-    // 模拟订阅回调（实际需替换为ROS订阅的回调触发，此处简化）
-    // 注：真实场景中livox_obs_pos应由livox_custom_cb实时更新
-    livox_obs_pos = livox_custom_cb(nullptr); // 传入msg（实际使用时替换为真实msg）
-
-    // 将Livox点列转换为Obstacle（每个点为中心，半径可配置）
-    const float LIVOX_OBS_RADIUS = 0.2f; // 激光点障碍物等效半径（可修改）
-    for (const auto &pos : livox_obs_pos)
-    {
-        Obstacle obs;
-        obs.position = pos; // 直接使用Eigen::Vector2f（格式一致）
-        obs.radius = LIVOX_OBS_RADIUS;
-        all_obstacles.push_back(obs);
-    }
-
-    // ----------------- 2. 圆锥避障离散（可选，融合圆锥+激光点） -----------------
-    // 圆锥参数（可配置）
-    const float cone_p0_x = 2.0f + init_position_x_take_off; // 圆锥顶点x
-    const float cone_p0_y = 0.0f + init_position_y_take_off; // 圆锥顶点y
-    const float cone_dir = 0.0f;                             // 圆锥轴线方向（0=x轴）
-    const float cone_half_angle = M_PI / 12;                 // 半锥角15°
-    const float cone_height = 3.0f;                          // 圆锥高度
-    const int sample_num = 10;                               // 离散点数
-
-    // 圆锥离散为圆形障碍物
-    float step = cone_height / (sample_num - 1);
-    for (int i = 0; i < sample_num; ++i)
-    {
-        float s = i * step;
-        Eigen::Vector2f cone_pos(
-            cone_p0_x + s * cos(cone_dir),
-            cone_p0_y + s * sin(cone_dir));
-        float cone_radius = s * tan(cone_half_angle); // 圆锥径向半径
-
-        Obstacle cone_obs;
-        cone_obs.position = cone_pos;
-        cone_obs.radius = cone_radius;
-        all_obstacles.push_back(cone_obs);
-    }
-
-    return all_obstacles;
-}
-
-/************************************************************************
-函数 7: Livox雷达原始回调函数（用户说明：返回std::vector<Eigen::Vector2f>）
-功能：接收Livox点云，解析为二维障碍物点列（用户后续完善，此处占位）
-*************************************************************************/
-std::vector<Eigen::Vector2f> livox_custom_cb(const livox_ros_driver::CustomMsg::ConstPtr &msg)
-{
-    std::vector<Eigen::Vector2f> obs_pos;
-    // 【用户待完善逻辑】解析Livox点云msg，转换为二维Eigen点列
-    // 示例框架（用户需补充）：
-    if (msg != nullptr)
-    {
-        for (const auto &point : msg->points)
-        {
-            // 1. 点云坐标转换（三维→二维，如取xy平面）
-            // 2. 滤波（去除地面、噪声点）
-            // 3. 存入obs_pos
-            obs_pos.push_back(Eigen::Vector2f(point.x, point.y));
-        }
-    }
-    // 测试用：无点云时返回模拟圆锥点列（可删除）
-    if (obs_pos.empty())
-    {
-        obs_pos.push_back(Eigen::Vector2f(2.0f + init_position_x_take_off, 0.0f + init_position_y_take_off));
-    }
-    return obs_pos;
-}
 
 /************************************************************************
 函数 5: 圆锥避障前进函数（case2调用，每帧执行）
