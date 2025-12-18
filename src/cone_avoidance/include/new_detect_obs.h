@@ -17,9 +17,8 @@
 #include<Eigen/StdVector>
 
 
-extern point target;
-float target_x{target.x};
-float target_y{target.y};
+extern float target_x;
+extern float target_y;
 extern ros::NodeHandle nh;
 extern nav_msgs::Odometry local_pos;
 extern double yaw;
