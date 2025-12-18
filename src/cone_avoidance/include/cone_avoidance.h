@@ -170,9 +170,13 @@ bool precision_land()
  */
 
 // CBF 参数
-
-
-
+float ALPHA = 2.0;
+float MAX_SPEED = 2.0;
+float OBS_EPS = 0.1;
+float KV = 0.2;
+float KN = 0.1;
+float W_goal = 0.8;
+float W_free = 0.2;
 
 /**
  * @brief 基于 Control Barrier Function (CBF) 的一阶速度避障控制器
