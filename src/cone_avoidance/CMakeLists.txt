@@ -40,3 +40,12 @@ include_directories(
 
 add_executable(cone_avoidance src/cone_avoidance.cpp)
 target_link_libraries(cone_avoidance ${catkin_LIBRARIES} )
+# 在CMakeLists.txt的合适位置添加：
+if(NOT CMAKE_BUILD_TYPE STREQUAL "Debug")
+  set(CMAKE_BUILD_TYPE "Debug")
+endif()
+
+# 添加编译选项
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -g -fsanitize=address -fno-omit-frame-pointer")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fsanitize=leak -fno-omit-frame-pointer")
+set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -fsanitize=address -fsanitize=leak")

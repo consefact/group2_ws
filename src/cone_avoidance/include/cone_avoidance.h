@@ -85,9 +85,18 @@ point getCross(segment seg, point point_p, CalcErr *err);
 void local_pos_cb(const nav_msgs::Odometry::ConstPtr &msg);
 void local_pos_cb(const nav_msgs::Odometry::ConstPtr &msg)
 {
+
+    
+    
     local_pos = *msg;
-    tf::quaternionMsgToTF(local_pos.pose.pose.orientation, quat);
+    tf::quaternionMsgToTF(local_pos.pose.pose.orientation, quat); 
     tf::Matrix3x3(quat).getRPY(roll, pitch, yaw);
+
+
+
+
+
+
     current_pos.push_back(point{local_pos.pose.pose.position.x, local_pos.pose.pose.position.y});
     tf::Vector3 body_vel(local_pos.twist.twist.linear.x, local_pos.twist.twist.linear.y, local_pos.twist.twist.linear.z);
     tf::Matrix3x3 rot_matrix(quat);

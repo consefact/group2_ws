@@ -1,0 +1,5 @@
+cone_avoidance
+/home/jetson/group2_ws/devel/.private/cone_avoidance/share/cone_avoidance/cmake/cone_avoidanceConfig-version.cmake /home/jetson/group2_ws/devel/share/cone_avoidance/cmake/cone_avoidanceConfig-version.cmake
+/home/jetson/group2_ws/devel/.private/cone_avoidance/share/cone_avoidance/cmake/cone_avoidanceConfig.cmake /home/jetson/group2_ws/devel/share/cone_avoidance/cmake/cone_avoidanceConfig.cmake
+/home/jetson/group2_ws/devel/.private/cone_avoidance/lib/cone_avoidance/cone_avoidance /home/jetson/group2_ws/devel/lib/cone_avoidance/cone_avoidance
+/home/jetson/group2_ws/devel/.private/cone_avoidance/lib/pkgconfig/cone_avoidance.pc /home/jetson/group2_ws/devel/lib/pkgconfig/cone_avoidance.pc

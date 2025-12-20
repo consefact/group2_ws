@@ -153,7 +153,12 @@ int main(int argc, char **argv)
     {
       // mission1: 起飞
       case 1:{
-
+  setpoint_raw.type_mask = /*1 + 2 + 4 + 8 + 16 + 32*/ +64 + 128 + 256 + 512 /*+ 1024 + 2048*/;
+  setpoint_raw.coordinate_frame = 1;
+  setpoint_raw.position.x = 1;
+  setpoint_raw.position.y = 0;
+  setpoint_raw.position.z = ALTITUDE;
+  setpoint_raw.yaw = 0;
       }
       default:
         break;

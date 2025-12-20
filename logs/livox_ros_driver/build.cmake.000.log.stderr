@@ -1,0 +1,98 @@
+** WARNING ** io features related to pcap will be disabled
+** WARNING ** io features related to png will be disabled
+** WARNING ** io features related to libusb-1.0 will be disabled
+/usr/include/apr-1.0
+apr-1
+Coudn't find livox sdk library!
+Download Livox-SDK from github and build&install it please!
+Download Livox-SDK from github and build&install it please!
+Download Livox-SDK from github and build&install it please!
+git clone Livox-SDK from github temporarily, only for ROS distro jenkins build!
+Try to pull the livox sdk source code from github
+Cloning into '/home/jetson/group2_ws/src/livox_ros_driver/livox_ros_driver/Livox-SDK'...
+[36m--[0m The C compiler identification is GNU 9.4.0
+[36m--[0m The CXX compiler identification is GNU 9.4.0
+[36m--[0m Check for working C compiler: /usr/bin/cc
+[36m--[0m Check for working C compiler: /usr/bin/cc -- works
+[36m--[0m Detecting C compiler ABI info
+[36m--[0m Detecting C compiler ABI info - done
+[36m--[0m Detecting C compile features
+[36m--[0m Detecting C compile features - done
+[36m--[0m Check for working CXX compiler: /usr/bin/c++
+[36m--[0m Check for working CXX compiler: /usr/bin/c++ -- works
+[36m--[0m Detecting CXX compiler ABI info
+[36m--[0m Detecting CXX compiler ABI info - done
+[36m--[0m Detecting CXX compile features
+[36m--[0m Detecting CXX compile features - done
+[36m--[0m main project dir: /home/jetson/group2_ws/src/livox_ros_driver/livox_ros_driver/Livox-SDK
+[36m--[0m Configuring done
+[36m--[0m Generating done
+[36m--[0m Build files have been written to: /home/jetson/group2_ws/src/livox_ros_driver/livox_ros_driver/Livox-SDK/build
+
+Scanning dependencies of target livox_sdk_static
+[  2%] Building CXX object sdk_core/CMakeFiles/livox_sdk_static.dir/src/third_party/FastCRC/FastCRCsw.cpp.o
+[  4%] Building CXX object sdk_core/CMakeFiles/livox_sdk_static.dir/src/base/io_loop.cpp.o
+[  6%] Building CXX object sdk_core/CMakeFiles/livox_sdk_static.dir/src/base/thread_base.cpp.o
+[  8%] Building CXX object sdk_core/CMakeFiles/livox_sdk_static.dir/src/base/io_thread.cpp.o
+[ 10%] Building CXX object sdk_core/CMakeFiles/livox_sdk_static.dir/src/base/network/unix/network_util.cpp.o
+[ 12%] Building CXX object sdk_core/CMakeFiles/livox_sdk_static.dir/src/base/logging.cpp.o
+[ 14%] Building CXX object sdk_core/CMakeFiles/livox_sdk_static.dir/src/livox_sdk.cpp.o
+[ 16%] Building CXX object sdk_core/CMakeFiles/livox_sdk_static.dir/src/device_discovery.cpp.o
+[ 18%] Building CXX object sdk_core/CMakeFiles/livox_sdk_static.dir/src/device_manager.cpp.o
+[ 20%] Building CXX object sdk_core/CMakeFiles/livox_sdk_static.dir/src/comm/comm_port.cpp.o
+[ 22%] Building CXX object sdk_core/CMakeFiles/livox_sdk_static.dir/src/comm/sdk_protocol.cpp.o
+[ 25%] Building CXX object sdk_core/CMakeFiles/livox_sdk_static.dir/src/data_handler/data_handler.cpp.o
+[ 27%] Building CXX object sdk_core/CMakeFiles/livox_sdk_static.dir/src/data_handler/hub_data_handler.cpp.o
+[ 29%] Building CXX object sdk_core/CMakeFiles/livox_sdk_static.dir/src/data_handler/lidar_data_handler.cpp.o
+[ 31%] Building CXX object sdk_core/CMakeFiles/livox_sdk_static.dir/src/command_handler/command_handler.cpp.o
+[ 33%] Building CXX object sdk_core/CMakeFiles/livox_sdk_static.dir/src/command_handler/command_channel.cpp.o
+[ 35%] Building CXX object sdk_core/CMakeFiles/livox_sdk_static.dir/src/command_handler/hub_command_handler.cpp.o
+[ 37%] Building CXX object sdk_core/CMakeFiles/livox_sdk_static.dir/src/command_handler/lidar_command_handler.cpp.o
+[ 39%] Building CXX object sdk_core/CMakeFiles/livox_sdk_static.dir/src/command_handler/command_impl.cpp.o
+[ 41%] Building CXX object sdk_core/CMakeFiles/livox_sdk_static.dir/src/base/multiple_io/multiple_io_base.cpp.o
+[ 43%] Building CXX object sdk_core/CMakeFiles/livox_sdk_static.dir/src/base/multiple_io/multiple_io_epoll.cpp.o
+[ 45%] Building CXX object sdk_core/CMakeFiles/livox_sdk_static.dir/src/base/multiple_io/multiple_io_poll.cpp.o
+[ 47%] Building CXX object sdk_core/CMakeFiles/livox_sdk_static.dir/src/base/multiple_io/multiple_io_select.cpp.o
+[ 50%] Building CXX object sdk_core/CMakeFiles/livox_sdk_static.dir/src/base/multiple_io/multiple_io_kqueue.cpp.o
+[ 52%] Building CXX object sdk_core/CMakeFiles/livox_sdk_static.dir/src/base/wake_up/unix/wake_up_pipe.cpp.o
+[ 54%] Linking CXX static library liblivox_sdk_static.a
+[ 54%] Built target livox_sdk_static
+Scanning dependencies of target hub_sample
+[ 56%] Building C object sample/hub/CMakeFiles/hub_sample.dir/main.c.o
+[ 58%] Linking CXX executable hub_sample
+[ 58%] Built target hub_sample
+Scanning dependencies of target lidar_sample
+[ 60%] Building C object sample/lidar/CMakeFiles/lidar_sample.dir/main.c.o
+[ 62%] Linking CXX executable lidar_sample
+[ 62%] Built target lidar_sample
+Scanning dependencies of target hub_lvx_sample
+[ 64%] Building CXX object sample/hub_lvx_file/CMakeFiles/hub_lvx_sample.dir/main.cpp.o
+[ 66%] Building CXX object sample/hub_lvx_file/CMakeFiles/hub_lvx_sample.dir/lvx_file.cpp.o
+[ 68%] Linking CXX executable hub_lvx_sample
+[ 68%] Built target hub_lvx_sample
+Scanning dependencies of target lidar_lvx_sample
+[ 70%] Building CXX object sample/lidar_lvx_file/CMakeFiles/lidar_lvx_sample.dir/main.cpp.o
+[ 72%] Building CXX object sample/lidar_lvx_file/CMakeFiles/lidar_lvx_sample.dir/lvx_file.cpp.o
+[ 75%] Linking CXX executable lidar_lvx_sample
+[ 75%] Built target lidar_lvx_sample
+Scanning dependencies of target hub_sample_cc
+[ 77%] Building CXX object sample_cc/hub/CMakeFiles/hub_sample_cc.dir/lds_hub.cpp.o
+[ 79%] Building CXX object sample_cc/hub/CMakeFiles/hub_sample_cc.dir/main.cpp.o
+[ 81%] Linking CXX executable hub_sample_cc
+[ 81%] Built target hub_sample_cc
+Scanning dependencies of target lidar_sample_cc
+[ 83%] Building CXX object sample_cc/lidar/CMakeFiles/lidar_sample_cc.dir/main.cpp.o
+[ 85%] Building CXX object sample_cc/lidar/CMakeFiles/lidar_sample_cc.dir/lds_lidar.cpp.o
+[ 87%] Linking CXX executable lidar_sample_cc
+[ 87%] Built target lidar_sample_cc
+Scanning dependencies of target trouble_shooting
+[ 89%] Building CXX object sample_cc/trouble_shooting/CMakeFiles/trouble_shooting.dir/main.cpp.o
+[ 91%] Linking CXX executable trouble_shooting
+[ 91%] Built target trouble_shooting
+Scanning dependencies of target lidar_utc_sync
+[ 93%] Building CXX object sample_cc/lidar_utc_sync/CMakeFiles/lidar_utc_sync.dir/main.cpp.o
+[ 95%] Building CXX object sample_cc/lidar_utc_sync/CMakeFiles/lidar_utc_sync.dir/lds_lidar.cpp.o
+[ 97%] Building CXX object sample_cc/lidar_utc_sync/CMakeFiles/lidar_utc_sync.dir/synchro.cpp.o
+[100%] Linking CXX executable lidar_utc_sync
+[100%] Built target lidar_utc_sync
+

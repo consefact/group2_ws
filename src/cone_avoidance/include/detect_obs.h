@@ -13,7 +13,7 @@ lidar_cb
 
 *************************************************************************/
 extern nav_msgs::Odometry local_pos;
-extern double yaw;
+double yaw=local_pos.pose.pose;
 extern float if_debug;
 extern float init_position_z_take_off;
 

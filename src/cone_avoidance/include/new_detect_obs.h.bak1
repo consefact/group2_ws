@@ -1,0 +1,397 @@
+#include <ros/ros.h>
+#include <livox_ros_driver/CustomMsg.h>
+#include <sensor_msgs/PointCloud2.h>
+#include <pcl_conversions/pcl_conversions.h>
+#include <pcl/point_cloud.h>
+#include <pcl/point_types.h>
+#include <pcl/filters/voxel_grid.h>  // 使用标准 VoxelGrid 代替 ApproximateVoxelGrid
+#include <vector>
+#include <cmath>
+#include <nav_msgs/Odometry.h>
+#include <visualization_msgs/MarkerArray.h>
+#include <std_msgs/Header.h>
+#include <unordered_map>
+#include <algorithm>
+#include <limits>
+
+// 外部变量声明
+extern struct point target;
+extern ros::NodeHandle nh;
+extern nav_msgs::Odometry local_pos;
+extern double yaw;
+extern float if_debug;
+extern float init_position_z_take_off;
+
+float target_x{target.x};
+float target_y{target.y};
+
+struct Obstacle{
+    int id;
+    Eigen::Vector2f position;
+    float radius;
+};
+std::vector<Obstacle> obstacles;
+
+constexpr float height_threshold_value{0.05};
+const float voxel_size_{0.05f};           // 体素滤波尺寸
+const float radius{0.6f};                 // 增大半径提高鲁棒性
+const int min_neighbors{4};               // 增加最小邻居数
+int max_cluster_size{200};
+float min_obstacle_radius_{0.15f};        // 调整最小半径
+float max_obstacle_radius_{2.5f};         // 调整最大半径
+
+class detect_obs{
+private:
+    pcl::VoxelGrid<pcl::PointXYZ> voxel_grid;  // 使用标准 VoxelGrid
+    ros::Publisher obstacle_marker_pub;
+
+public:
+    static detect_obs& getInstance() {
+        static detect_obs instance; 
+        return instance;
+    }
+    
+    void livox_custom_cb(const livox_ros_driver::CustomMsg::ConstPtr& msg){
+        static bool publisher_initialized = false;
+        if (!publisher_initialized) {
+            ros::NodeHandle nh;
+            obstacle_marker_pub = nh.advertise<visualization_msgs::MarkerArray>("/obstacle_markers", 1);
+            publisher_initialized = true;
+        }
+
+        // 1. 转换 Livox 消息为 PCL 点云
+        auto cloud_world = convertLivoxToPCL(msg);
+        
+        // 2. 体素滤波 - 使用标准 VoxelGrid
+        auto cloud_voxel = voxelFilter(cloud_world);
+        
+        // 3. 简单的密度过滤（不使用 KdTree）
+        auto cloud_dense = simpleDensityFilter(cloud_voxel);
+        
+        // 4. 简单的聚类（不使用 PCL 的聚类）
+        auto clusters = simpleClustering(cloud_dense);
+
+        publishObstacleMarkers(clusters);
+        
+        Eigen::Vector2f drone_pos(local_pos.pose.pose.position.x, 
+                                local_pos.pose.pose.position.y);
+        Eigen::Vector2f target_pos(target_x, target_y);
+        
+        obstacles.clear();
+        int id = 0;
+        for (auto& cluster : clusters) {
+            Eigen::Vector2f center;
+            float radius_val;
+            
+            if (validateAndFitObstacle(cluster, drone_pos, target_pos, center, radius_val)) {
+                if (radius_val >= min_obstacle_radius_ && radius_val <= max_obstacle_radius_) {
+                    obstacles.push_back({id++, center, radius_val});
+                }
+            }
+        }
+        
+        static int log_count = 0;
+        if (if_debug == 1 && ++log_count % 10 == 0) {
+            ROS_INFO("Drone: (%.2f, %.2f), Target: (%.2f, %.2f)", 
+                    local_pos.pose.pose.position.x, local_pos.pose.pose.position.y,
+                    target_x, target_y);
+            ROS_INFO("总共%d，接收：%lu，体素：%lu，密集：%lu，簇数量：%lu", 
+                    msg->point_num, cloud_world->size(), cloud_voxel->size(), 
+                    cloud_dense->size(), clusters.size());
+            log_count = 0;
+        }
+    }
+        
+private:
+    detect_obs(){
+        // 设置标准 VoxelGrid 参数
+        voxel_grid.setLeafSize(voxel_size_, voxel_size_, voxel_size_);
+    }
+    
+    detect_obs(const detect_obs&) = delete;
+    detect_obs& operator=(const detect_obs&) = delete;
+
+    pcl::PointCloud<pcl::PointXYZ>::Ptr convertLivoxToPCL(const livox_ros_driver::CustomMsg::ConstPtr& livox_msg) {
+        pcl::PointCloud<pcl::PointXYZ>::Ptr pcl_cloud(new pcl::PointCloud<pcl::PointXYZ>);
+        pcl_cloud->clear();
+        const size_t point_num = livox_msg->point_num;
+
+        float plx = local_pos.pose.pose.position.x;
+        float ply = local_pos.pose.pose.position.y;
+        const livox_ros_driver::CustomPoint* livox_points = livox_msg->points.data();
+
+        const float cy = cosf(yaw);
+        const float sy = sinf(yaw);
+
+        for (size_t i = 0; i < point_num; ++i) {
+            if(livox_points[i].z >= -height_threshold_value && livox_points[i].z <= height_threshold_value) {
+                float x = livox_points[i].x;
+                float y = livox_points[i].y;
+                float px = x * cy - y * sy + plx;
+                float py = x * sy + y * cy + ply;
+                pcl_cloud->push_back(pcl::PointXYZ(px, py, 0.0f));
+            }
+        }
+        
+        pcl_cloud->width = static_cast<uint32_t>(pcl_cloud->points.size());
+        pcl_cloud->height = 1;
+        pcl_cloud->is_dense = true;
+        
+        return pcl_cloud;
+    }
+
+    pcl::PointCloud<pcl::PointXYZ>::Ptr voxelFilter(const pcl::PointCloud<pcl::PointXYZ>::Ptr& input) {
+        pcl::PointCloud<pcl::PointXYZ>::Ptr output(new pcl::PointCloud<pcl::PointXYZ>);
+        voxel_grid.setInputCloud(input);
+        voxel_grid.filter(*output);
+        
+        output->width = static_cast<uint32_t>(output->points.size());
+        output->height = 1;
+        output->is_dense = true;
+        
+        return output;
+    }
+
+    // 完全避免使用 KdTree 的简单密度过滤
+    pcl::PointCloud<pcl::PointXYZ>::Ptr simpleDensityFilter(const pcl::PointCloud<pcl::PointXYZ>::Ptr& input) {
+        if (input->empty()) {
+            return pcl::PointCloud<pcl::PointXYZ>::Ptr(new pcl::PointCloud<pcl::PointXYZ>);
+        }
+
+        // 使用网格方法进行密度估计
+        std::unordered_map<int, std::vector<int>> grid;
+        float grid_size = 0.3f;  // 30cm 网格
+        
+        for (size_t i = 0; i < input->size(); ++i) {
+            const auto& pt = input->points[i];
+            int grid_x = static_cast<int>(pt.x / grid_size);
+            int grid_y = static_cast<int>(pt.y / grid_size);
+            int grid_key = grid_x * 10000 + grid_y;
+            grid[grid_key].push_back(i);
+        }
+        
+        pcl::PointCloud<pcl::PointXYZ>::Ptr output(new pcl::PointCloud<pcl::PointXYZ>);
+        output->points.reserve(input->size() / 2);
+        
+        for (size_t i = 0; i < input->size(); ++i) {
+            const auto& pt = input->points[i];
+            int grid_x = static_cast<int>(pt.x / grid_size);
+            int grid_y = static_cast<int>(pt.y / grid_size);
+            int grid_key = grid_x * 10000 + grid_y;
+            
+            // 检查相邻网格
+            int neighbor_count = 0;
+            for (int dx = -1; dx <= 1; ++dx) {
+                for (int dy = -1; dy <= 1; ++dy) {
+                    int neighbor_key = (grid_x + dx) * 10000 + (grid_y + dy);
+                    if (grid.find(neighbor_key) != grid.end()) {
+                        neighbor_count += grid[neighbor_key].size();
+                    }
+                }
+            }
+            
+            if (neighbor_count >= min_neighbors) {
+                output->points.push_back(pt);
+            }
+        }
+        
+        output->width = static_cast<uint32_t>(output->points.size());
+        output->height = 1;
+        output->is_dense = true;
+        
+        return output;
+    }
+
+    // 简单的聚类算法，避免使用 PCL 的聚类
+    std::vector<pcl::PointCloud<pcl::PointXYZ>::Ptr> simpleClustering(const pcl::PointCloud<pcl::PointXYZ>::Ptr& input) {
+        std::vector<pcl::PointCloud<pcl::PointXYZ>::Ptr> clusters;
+        if (input->empty()) return clusters;
+        
+        std::vector<bool> visited(input->size(), false);
+        float cluster_tolerance = 0.4f;  // 40cm
+        
+        for (size_t i = 0; i < input->size(); ++i) {
+            if (visited[i]) continue;
+            
+            visited[i] = true;
+            pcl::PointCloud<pcl::PointXYZ>::Ptr cluster(new pcl::PointCloud<pcl::PointXYZ>);
+            cluster->points.push_back(input->points[i]);
+            
+            // 简单的 BFS 聚类
+            size_t cluster_idx = 0;
+            while (cluster_idx < cluster->size()) {
+                const auto& seed = cluster->points[cluster_idx++];
+                
+                for (size_t j = 0; j < input->size(); ++j) {
+                    if (visited[j]) continue;
+                    
+                    const auto& pt = input->points[j];
+                    float dx = pt.x - seed.x;
+                    float dy = pt.y - seed.y;
+                    float dist = std::sqrt(dx*dx + dy*dy);
+                    
+                    if (dist <= cluster_tolerance) {
+                        visited[j] = true;
+                        cluster->points.push_back(pt);
+                    }
+                }
+            }
+            
+            if (cluster->size() >= 5 && cluster->size() <= max_cluster_size) {
+                cluster->width = static_cast<uint32_t>(cluster->points.size());
+                cluster->height = 1;
+                cluster->is_dense = true;
+                clusters.push_back(cluster);
+            }
+        }
+        
+        return clusters;
+    }
+
+    void publishObstacleMarkers(const std::vector<pcl::PointCloud<pcl::PointXYZ>::Ptr>& clusters) {
+        visualization_msgs::MarkerArray marker_array;
+
+        for (size_t i = 0; i < clusters.size(); ++i) {
+            if (clusters[i]->empty()) continue;
+
+            float sum_x = 0, sum_y = 0;
+            for (const auto& pt : clusters[i]->points) {
+                sum_x += pt.x;
+                sum_y += pt.y;
+            }
+            float cx = sum_x / clusters[i]->size();
+            float cy = sum_y / clusters[i]->size();
+
+            visualization_msgs::Marker circle_marker;
+            circle_marker.header.frame_id = "map";
+            circle_marker.header.stamp = ros::Time::now();
+            circle_marker.ns = "obstacle_circles";
+            circle_marker.id = i;
+            circle_marker.type = visualization_msgs::Marker::CYLINDER;
+            circle_marker.action = visualization_msgs::Marker::ADD;
+            circle_marker.pose.position.x = cx;
+            circle_marker.pose.position.y = cy;
+            circle_marker.pose.position.z = 0.2;
+            circle_marker.pose.orientation.w = 1.0;
+            circle_marker.scale.x = 0.3;  // 稍微增大
+            circle_marker.scale.y = 0.3;
+            circle_marker.scale.z = 0.4;
+            circle_marker.color.r = 0.0;
+            circle_marker.color.g = 1.0;
+            circle_marker.color.b = 0.0;
+            circle_marker.color.a = 0.7;
+            marker_array.markers.push_back(circle_marker);
+        }
+
+        obstacle_marker_pub.publish(marker_array);
+    }
+
+    bool segmentsIntersect(
+        const Eigen::Vector2f& p1, const Eigen::Vector2f& p2,
+        const Eigen::Vector2f& q1, const Eigen::Vector2f& q2) {
+        if (!std::isfinite(p1.x()) || !std::isfinite(p1.y()) ||
+            !std::isfinite(p2.x()) || !std::isfinite(p2.y()) ||
+            !std::isfinite(q1.x()) || !std::isfinite(q1.y()) ||
+            !std::isfinite(q2.x()) || !std::isfinite(q2.y())) {
+            return false;
+        }
+        
+        auto orientation = [](const Eigen::Vector2f& a, const Eigen::Vector2f& b, const Eigen::Vector2f& c) {
+            return (b.x() - a.x()) * (c.y() - a.y()) - (b.y() - a.y()) * (c.x() - a.x());
+        };
+        
+        float o1 = orientation(p1, p2, q1);
+        float o2 = orientation(p1, p2, q2);
+        float o3 = orientation(q1, q2, p1);
+        float o4 = orientation(q1, q2, p2);
+        
+        if (((o1 > 0 && o2 < 0) || (o1 < 0 && o2 > 0)) &&
+            ((o3 > 0 && o4 < 0) || (o3 < 0 && o4 > 0))) {
+            return true;
+        }
+        
+        return false;
+    }
+
+    bool clusterIntersectsPath(
+        const pcl::PointCloud<pcl::PointXYZ>::Ptr& cluster,
+        const Eigen::Vector2f& drone_pos,
+        const Eigen::Vector2f& target_pos) {
+        
+        float min_x = std::numeric_limits<float>::max();
+        float max_x = -std::numeric_limits<float>::max();
+        float min_y = std::numeric_limits<float>::max();
+        float max_y = -std::numeric_limits<float>::max();
+        
+        for (const auto& pt : cluster->points) {
+            min_x = std::min(min_x, pt.x);
+            max_x = std::max(max_x, pt.x);
+            min_y = std::min(min_y, pt.y);
+            max_y = std::max(max_y, pt.y);
+        }
+        
+        Eigen::Vector2f box_corners[4] = {
+            {min_x, min_y}, {max_x, min_y},
+            {max_x, max_y}, {min_x, max_y}
+        };
+        
+        for (int i = 0; i < 4; i++) {
+            if (segmentsIntersect(drone_pos, target_pos, 
+                                box_corners[i], box_corners[(i+1)%4])) {
+                return true;
+            }
+        }
+        
+        return false;
+    }
+
+    void fitMinimumEnclosingCircle(
+        const pcl::PointCloud<pcl::PointXYZ>::Ptr& cluster,
+        Eigen::Vector2f& center,
+        float& radius) {
+        
+        center = Eigen::Vector2f(0, 0);
+        for (const auto& pt : cluster->points) {
+            center.x() += pt.x;
+            center.y() += pt.y;
+        }
+        center /= static_cast<float>(cluster->size());
+        
+        radius = 0;
+        for (const auto& pt : cluster->points) {
+            float dx = pt.x - center.x();
+            float dy = pt.y - center.y();
+            float dist = std::sqrt(dx*dx + dy*dy);
+            radius = std::max(radius, dist);
+        }
+    }
+
+    bool validateAndFitObstacle(
+        const pcl::PointCloud<pcl::PointXYZ>::Ptr& cluster,
+        const Eigen::Vector2f& drone_pos,
+        const Eigen::Vector2f& target_pos,
+        Eigen::Vector2f& center,
+        float& radius) {
+        
+        if (cluster->empty() || cluster->size() < 3) return false;
+
+        fitMinimumEnclosingCircle(cluster, center, radius);
+        
+        // 简单的路径相交检查
+        if (clusterIntersectsPath(cluster, drone_pos, target_pos)) {
+            return true;
+        }
+        
+        // 如果障碍物很大，也认为是有效的
+        if (radius > 0.3f) {
+            return true;
+        }
+        
+        return false;
+    }
+};
+
+// 全局包装函数
+void livox_cb_wrapper(const livox_ros_driver::CustomMsg::ConstPtr& msg) {
+    detect_obs::getInstance().livox_custom_cb(msg);
+}

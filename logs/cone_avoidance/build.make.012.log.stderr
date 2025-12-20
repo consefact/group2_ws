@@ -1,0 +1,84 @@
+[01m[K/home/jetson/group2_ws/src/cone_avoidance/src/cone_avoidance.cpp:179:1:[m[K [01;31m[Kerror: [m[Kexpected ‘[01m[K}[m[K’ at end of input
+  179 | [01;31m[K}[m[K
+      | [01;31m[K^[m[K
+In file included from [01m[K/home/jetson/group2_ws/src/cone_avoidance/src/cone_avoidance.cpp:2[m[K:
+[01m[K/home/jetson/group2_ws/src/cone_avoidance/include/new_detect_obs.h:44:17:[m[K [01;36m[Knote: [m[Kto match this ‘[01m[K{[m[K’
+   44 | class detect_obs[01;36m[K{[m[K
+      |                 [01;36m[K^[m[K
+[01m[K/home/jetson/group2_ws/src/cone_avoidance/include/new_detect_obs.h:[m[K In member function ‘[01m[Kvoid detect_obs::livox_custom_cb(const ConstPtr&)[m[K’:
+[01m[K/home/jetson/group2_ws/src/cone_avoidance/include/new_detect_obs.h:78:9:[m[K [01;31m[Kerror: [m[K‘[01m[KconvertLivoxToPCL[m[K’ was not declared in this scope
+   78 |         [01;31m[KconvertLivoxToPCL[m[K(msg, cloud_world);
+      |         [01;31m[K^~~~~~~~~~~~~~~~~[m[K
+[01m[K/home/jetson/group2_ws/src/cone_avoidance/include/new_detect_obs.h:82:9:[m[K [01;31m[Kerror: [m[K‘[01m[KvoxelFilterAndProject[m[K’ was not declared in this scope
+   82 |         [01;31m[KvoxelFilterAndProject[m[K(cloud_world, cloud_voxel);
+      |         [01;31m[K^~~~~~~~~~~~~~~~~~~~~[m[K
+[01m[K/home/jetson/group2_ws/src/cone_avoidance/include/new_detect_obs.h:85:9:[m[K [01;31m[Kerror: [m[K‘[01m[KfilterDenseVoxels[m[K’ was not declared in this scope
+   85 |         [01;31m[KfilterDenseVoxels[m[K(cloud_voxel, cloud_dense);
+      |         [01;31m[K^~~~~~~~~~~~~~~~~[m[K
+[01m[K/home/jetson/group2_ws/src/cone_avoidance/include/new_detect_obs.h:87:9:[m[K [01;31m[Kerror: [m[K‘[01m[KeuclideanClustering[m[K’ was not declared in this scope
+   87 |         [01;31m[KeuclideanClustering[m[K(cloud_dense,clusters);
+      |         [01;31m[K^~~~~~~~~~~~~~~~~~~[m[K
+[01m[K/home/jetson/group2_ws/src/cone_avoidance/include/new_detect_obs.h:89:9:[m[K [01;31m[Kerror: [m[K‘[01m[KpublishObstacleMarkers[m[K’ was not declared in this scope
+   89 |         [01;31m[KpublishObstacleMarkers[m[K(clusters);
+      |         [01;31m[K^~~~~~~~~~~~~~~~~~~~~~[m[K
+In file included from [01m[K/home/jetson/group2_ws/src/cone_avoidance/src/cone_avoidance.cpp:2[m[K:
+[01m[K/home/jetson/group2_ws/src/cone_avoidance/include/new_detect_obs.h:140:1:[m[K [01;31m[Kerror: [m[Kexpected primary-expression before ‘[01m[Kprivate[m[K’
+  140 | [01;31m[Kprivate[m[K:
+      | [01;31m[K^~~~~~~[m[K
+[01m[K/home/jetson/group2_ws/src/cone_avoidance/include/new_detect_obs.h:150:15:[m[K [01;31m[Kerror: [m[Kexpected primary-expression before ‘[01m[K([m[K’ token
+  150 |     detect_obs[01;31m[K([m[Kconst detect_obs&)=delete;
+      |               [01;31m[K^[m[K
+[01m[K/home/jetson/group2_ws/src/cone_avoidance/include/new_detect_obs.h:150:16:[m[K [01;31m[Kerror: [m[Kexpected primary-expression before ‘[01m[Kconst[m[K’
+  150 |     detect_obs([01;31m[Kconst[m[K detect_obs&)=delete;
+      |                [01;31m[K^~~~~[m[K
+[01m[K/home/jetson/group2_ws/src/cone_avoidance/include/new_detect_obs.h:150:41:[m[K [01;31m[Kerror: [m[Kexpected primary-expression before ‘[01m[K;[m[K’ token
+  150 |     detect_obs(const detect_obs&)=delete[01;31m[K;[m[K
+      |                                         [01;31m[K^[m[K
+[01m[K/home/jetson/group2_ws/src/cone_avoidance/include/new_detect_obs.h:151:17:[m[K [01;31m[Kerror: [m[K‘[01m[Kdetect_obs& operator=(const detect_obs&)[m[K’ must be a nonstatic member function
+  151 |     detect_obs& [01;31m[Koperator[m[K=(const detect_obs&)=delete;
+      |                 [01;31m[K^~~~~~~~[m[K
+[01m[K/home/jetson/group2_ws/src/cone_avoidance/include/new_detect_obs.h:156:73:[m[K [01;31m[Kerror: [m[Ka function-definition is not allowed here before ‘[01m[K{[m[K’ token
+  156 |                         pcl::PointCloud<pcl::PointXYZ>::Ptr& pcl_cloud) [01;31m[K{[m[K
+      |                                                                         [01;31m[K^[m[K
+[01m[K/home/jetson/group2_ws/src/cone_avoidance/include/new_detect_obs.h:183:76:[m[K [01;31m[Kerror: [m[Ka function-definition is not allowed here before ‘[01m[K{[m[K’ token
+  183 |                               pcl::PointCloud<pcl::PointXYZ>::Ptr& output) [01;31m[K{[m[K
+      |                                                                            [01;31m[K^[m[K
+[01m[K/home/jetson/group2_ws/src/cone_avoidance/include/new_detect_obs.h:189:121:[m[K [01;31m[Kerror: [m[Ka function-definition is not allowed here before ‘[01m[K{[m[K’ token
+  189 |     void filterDenseVoxels(const pcl::PointCloud<pcl::PointXYZ>::Ptr& input,pcl::PointCloud<pcl::PointXYZ>::Ptr& output)[01;31m[K{[m[K
+      |                                                                                                                         [01;31m[K^[m[K
+[01m[K/home/jetson/group2_ws/src/cone_avoidance/include/new_detect_obs.h:209:86:[m[K [01;31m[Kerror: [m[Ka function-definition is not allowed here before ‘[01m[K{[m[K’ token
+  209 |                          std::vector<pcl::PointCloud<pcl::PointXYZ>::Ptr>& clusters) [01;31m[K{[m[K
+      |                                                                                      [01;31m[K^[m[K
+[01m[K/home/jetson/group2_ws/src/cone_avoidance/include/new_detect_obs.h:241:99:[m[K [01;31m[Kerror: [m[Ka function-definition is not allowed here before ‘[01m[K{[m[K’ token
+  241 |     void publishObstacleMarkers(const std::vector<pcl::PointCloud<pcl::PointXYZ>::Ptr>& clusters) [01;31m[K{[m[K
+      |                                                                                                   [01;31m[K^[m[K
+[01m[K/home/jetson/group2_ws/src/cone_avoidance/include/new_detect_obs.h:314:63:[m[K [01;31m[Kerror: [m[Ka function-definition is not allowed here before ‘[01m[K{[m[K’ token
+  314 |         const Eigen::Vector2f& q1, const Eigen::Vector2f& q2) [01;31m[K{[m[K
+      |                                                               [01;31m[K^[m[K
+[01m[K/home/jetson/group2_ws/src/cone_avoidance/include/new_detect_obs.h:333:44:[m[K [01;31m[Kerror: [m[Ka function-definition is not allowed here before ‘[01m[K{[m[K’ token
+  333 |         const Eigen::Vector2f& target_pos) [01;31m[K{[m[K
+      |                                            [01;31m[K^[m[K
+[01m[K/home/jetson/group2_ws/src/cone_avoidance/include/new_detect_obs.h:372:24:[m[K [01;31m[Kerror: [m[Ka function-definition is not allowed here before ‘[01m[K{[m[K’ token
+  372 |         float& radius) [01;31m[K{[m[K
+      |                        [01;31m[K^[m[K
+[01m[K/home/jetson/group2_ws/src/cone_avoidance/include/new_detect_obs.h:396:24:[m[K [01;31m[Kerror: [m[Ka function-definition is not allowed here before ‘[01m[K{[m[K’ token
+  396 |         float& radius) [01;31m[K{[m[K
+      |                        [01;31m[K^[m[K
+[01m[K/home/jetson/group2_ws/src/cone_avoidance/include/new_detect_obs.h:432:29:[m[K [01;31m[Kerror: [m[Ka function-definition is not allowed here before ‘[01m[K{[m[K’ token
+  432 |         float& circularity) [01;31m[K{[m[K
+      |                             [01;31m[K^[m[K
+[01m[K/home/jetson/group2_ws/src/cone_avoidance/src/cone_avoidance.cpp:[m[K In member function ‘[01m[Kint detect_obs::main(int, char**)[m[K’:
+[01m[K/home/jetson/group2_ws/src/cone_avoidance/src/cone_avoidance.cpp:34:93:[m[K [01;31m[Kerror: [m[Kinvalid use of non-static member function ‘[01m[Kvoid detect_obs::livox_cb_wrapper(const ConstPtr&)[m[K’
+   34 |   ros::Subscriber livox_sub = nh.subscribe<livox_ros_driver::CustomMsg>("/livox/lidar", 10, [01;31m[Klivox_cb_wrapper[m[K);
+      |                                                                                             [01;31m[K^~~~~~~~~~~~~~~~[m[K
+In file included from [01m[K/home/jetson/group2_ws/src/cone_avoidance/src/cone_avoidance.cpp:2[m[K:
+[01m[K/home/jetson/group2_ws/src/cone_avoidance/include/new_detect_obs.h:476:6:[m[K [01;36m[Knote: [m[Kdeclared here
+  476 | void [01;36m[Klivox_cb_wrapper[m[K(const livox_ros_driver::CustomMsg::ConstPtr& msg) {
+      |      [01;36m[K^~~~~~~~~~~~~~~~[m[K
+[01m[K/home/jetson/group2_ws/src/cone_avoidance/src/cone_avoidance.cpp:[m[K At global scope:
+[01m[K/home/jetson/group2_ws/src/cone_avoidance/src/cone_avoidance.cpp:179:1:[m[K [01;31m[Kerror: [m[Kexpected unqualified-id at end of input
+  179 | [01;31m[K}[m[K
+      | [01;31m[K^[m[K
+make[2]: *** [CMakeFiles/cone_avoidance.dir/build.make:63: CMakeFiles/cone_avoidance.dir/src/cone_avoidance.cpp.o] Error 1
+make[1]: *** [CMakeFiles/Makefile2:223: CMakeFiles/cone_avoidance.dir/all] Error 2
+make: *** [Makefile:141: all] Error 2
