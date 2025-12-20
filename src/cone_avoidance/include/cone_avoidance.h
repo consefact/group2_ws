@@ -20,6 +20,7 @@
 #include <std_msgs/Empty.h>
 #include <std_msgs/Int32.h>
 #include <livox_ros_driver/CustomMsg.h>
+#include<eigen3/Eigen/Dense>
 
 using namespace std;
 
@@ -27,8 +28,6 @@ using namespace std;
 
 mavros_msgs::PositionTarget setpoint_raw;
 
-Eigen::Vector2f current_pos; // 无人机历史位置（二维）
-Eigen::Vector2f current_vel; // 无人机历史速度（二维）
 Eigen::Vector2f current_pos; // 无人机历史位置（二维）
 Eigen::Vector2f current_vel; // 无人机历史速度（二维）
 
@@ -54,59 +53,22 @@ float init_position_y_take_off = 0;
 float init_position_z_take_off = 0;
 float init_yaw_take_off = 0;
 bool flag_init_position = false;
-typedef struct point
-{
-    float x;
-    float y;
-    point():x(0),y(0){}
-    template<typename T>
-    point(T x,T y):x(static_cast<float>(x)),y(static_cast<float>(y)){}
-} point;
-point target(4.0f,0.0f);
-
-/* 线段结构体（segment） */
-typedef struct segment
-{
-    point p1;
-    point p2; // 两点确定一条直线
-} segment;
-struct Vel
-{
-    float x;
-    float y;
-    template<typename T>
-    Vel(T x,T y):x(static_cast<float>( x )),y(static_cast<float>( y )){}
-};
-std::vector<point> current_pos;
-std::vector<Vel> current_vel;
-
-// 错误码定义
-typedef enum
-{
-    CALC_SUCCESS = 0,
-    CALC_DIV_ZERO = 1,     // 除以零错误
-    CALC_INVALID_PARAM = 2 // 参数非法
-} CalcErr;
-point getCross(segment seg, point point_p, CalcErr *err);
 void local_pos_cb(const nav_msgs::Odometry::ConstPtr &msg);
 void local_pos_cb(const nav_msgs::Odometry::ConstPtr &msg)
 {
-
-    
-    
     local_pos = *msg;
-    tf::quaternionMsgToTF(local_pos.pose.pose.orientation, quat); 
+    tf::quaternionMsgToTF(local_pos.pose.pose.orientation, quat);
     tf::Matrix3x3(quat).getRPY(roll, pitch, yaw);
     // 【修改1】存储Eigen::Vector2f格式的位置（替代原point结构体）
-    Eigen::Vector2f  current_pos(local_pos.pose.pose.position.x, local_pos.pose.pose.position.y);
+    current_pos={local_pos.pose.pose.position.x, local_pos.pose.pose.position.y};
 
     // 【修改2】存储Eigen::Vector2f格式的速度（替代原Vel结构体）
     tf::Vector3 body_vel(local_pos.twist.twist.linear.x, local_pos.twist.twist.linear.y, local_pos.twist.twist.linear.z);
     tf::Matrix3x3 rot_matrix(quat);
     tf::Vector3 world_vel = rot_matrix * body_vel;
-    Eigen::Vector2f current_vel(world_vel.x(), world_vel.y());
+    current_vel={world_vel.x(), world_vel.y()};
 
-    if (flag_init_position == false && (local_pos.pose.pose.position.z != 0))
+    if (flag_init_position == false && (local_pos.pose.pose.position.z > 0.1)) // 优化初始化阈值
     {
         init_position_x_take_off = local_pos.pose.pose.position.x;
         init_position_y_take_off = local_pos.pose.pose.position.y;
@@ -115,16 +77,7 @@ void local_pos_cb(const nav_msgs::Odometry::ConstPtr &msg)
         flag_init_position = true;
     }
 }
-void time_c_b_pos(const ros::TimerEvent &event); // 每隔5秒删除一次储存的位置
-void time_c_b_pos(const ros::TimerEvent &event)
-{
-    current_pos.clear();
-}
-void time_c_b_vel(const ros::TimerEvent &event); // 每隔5秒删除一次储存的速度
-void time_c_b_vel(const ros::TimerEvent &event)
-{
-    current_vel.clear();
-}
+
 /************************************************************************
 函数 3: 无人机位置控制
 控制无人机飞向（x, y, z）位置，target_yaw为目标航向角，error_max为允许的误差范围
@@ -133,7 +86,7 @@ void time_c_b_vel(const ros::TimerEvent &event)
 float mission_pos_cruise_last_position_x = 0;
 float mission_pos_cruise_last_position_y = 0;
 // ========== 第七处修改：超时阈值改为可配置变量，设置默认初值 ==========
-float mission_cruise_timeout = 180.0f;     // 普通巡航超时阈值默认值（秒）
+float mission_cruise_timeout = 180.0f;    // 普通巡航超时阈值默认值（秒）
 ros::Time mission_cruise_start_time;      // 巡航任务开始时间
 bool mission_cruise_timeout_flag = false; // 巡航超时标志
 // ========== 修改结束 ==========
@@ -146,10 +99,10 @@ bool mission_pos_cruise(float x, float y, float z, float target_yaw, float error
         mission_pos_cruise_last_position_x = local_pos.pose.pose.position.x;
         mission_pos_cruise_last_position_y = local_pos.pose.pose.position.y;
         mission_pos_cruise_flag = true;
-          mission_cruise_start_time = ros::Time::now(); // 第七处修改：记录启动时间
+        mission_cruise_start_time = ros::Time::now(); // 第七处修改：记录启动时间
         mission_cruise_timeout_flag = false;          // 第七处修改：重置超时标志
     }
-       // ========== 第七处修改：巡航超时判断逻辑 ==========
+    // ========== 第七处修改：巡航超时判断逻辑 ==========
     ros::Duration elapsed_time = ros::Time::now() - mission_cruise_start_time;
     if (elapsed_time.toSec() > mission_cruise_timeout && !mission_cruise_timeout_flag)
     {
@@ -165,10 +118,10 @@ bool mission_pos_cruise(float x, float y, float z, float target_yaw, float error
     setpoint_raw.position.y = y + init_position_y_take_off;
     setpoint_raw.position.z = z + init_position_z_take_off;
     setpoint_raw.yaw = target_yaw;
-    // ROS_INFO("now (%.2f,%.2f,%.2f,%.2f) to ( %.2f, %.2f, %.2f, %.2f)", local_pos.pose.pose.position.x, local_pos.pose.pose.position.y, local_pos.pose.pose.position.z, target_yaw * 180.0 / M_PI, x + init_position_x_take_off, y + init_position_y_take_off, z + init_position_z_take_off, target_yaw * 180.0 / M_PI);
+    ROS_INFO("now (%.2f,%.2f,%.2f,%.2f) to ( %.2f, %.2f, %.2f, %.2f)", local_pos.pose.pose.position.x, local_pos.pose.pose.position.y, local_pos.pose.pose.position.z, target_yaw * 180.0 / M_PI, x + init_position_x_take_off, y + init_position_y_take_off, z + init_position_z_take_off, target_yaw * 180.0 / M_PI);
     if (fabs(local_pos.pose.pose.position.x - x - init_position_x_take_off) < error_max && fabs(local_pos.pose.pose.position.y - y - init_position_y_take_off) < error_max && fabs(local_pos.pose.pose.position.z - z - init_position_z_take_off) < error_max && fabs(yaw - target_yaw) < 0.1)
     {
-        // ROS_INFO("到达目标点，巡航点任务完成");
+        ROS_INFO("到达目标点，巡航点任务完成");
         mission_cruise_timeout_flag = false; // 第七处修改：重置超时标志
         mission_pos_cruise_flag = false;
         return true;
@@ -202,16 +155,14 @@ bool precision_land()
     setpoint_raw.coordinate_frame = 1;
     if (ros::Time::now() - precision_land_last_time > ros::Duration(5.0))
     {
-        // ROS_INFO("Precision landing complete.");
+        ROS_INFO("Precision landing complete.");
         precision_land_init_position_flag = false; // Reset for next landing
         return true;
     }
     return false;
 }
 /************************************************************************
-函数 5：cal_min_distance
-计算激光雷达数据中的最小距离及其对应的角度索引
-返回值：无
+函数 :计算速度
 *************************************************************************/
 
 /*
@@ -361,80 +312,41 @@ Eigen::Vector2f applyCBF(
 
 
 /************************************************************************
-函数 9: stuck_detection 震荡检测函数
-根据位置回调数据，速度回调判断无人机是否处于震荡状态
-输入参数：无人机位置，速度
-返回值：true/false表示是否处于震荡状态
+函数 5: 圆锥避障前进函数（case2调用，每帧执行）
+功能：集成CBF速度控制器，实现圆锥避障并向目标点移动
+参数：
+  - target_x/y: 目标点xy坐标（局部系，相对起飞点）
+  - target_z: 目标点z高度（绝对高度）
+  - target_yaw: 目标偏航角（弧度）
+  - UAV_radius: 无人机自身等效半径（米）
+  - time_final: 超时时间（秒）
+  - err_max: 到达目标点的距离误差阈值（米）
+返回值：
+  - true: 超时/到达目标点，触发任务切换
+  - false: 未完成，继续避障移动
 *************************************************************************/
-int flag = 0;
-bool stuck_detection(const vector<point> &pos, const vector<Vel> &vel)
+bool cone_avoidance_movement(float target_x, float target_y, float target_z,
+                             float target_yaw, float UAV_radius,
+                             float time_final, float err_max)
 {
-
-    int n1 = pos.size();
-    int n2 = vel.size();
-    int n = (n1 > n2) ? n2 : n1; // 找出最小的，防止指向空值
-        for (int i = 0; i < n; i++)
-        {
-            for (int j = i + 1; j < n; j++)
-            {                                                                // 遍历任意两个点
-                float dis = hypot(pos[i].x - pos[j].x, pos[i].y - pos[j].y); // 算距离
-                //25.12.12(19.15) 修改震荡判断条件，增加速度反向判断
-                if (dis <= 0.3 && ((vel[i].x * vel[j].x + vel[i].y * vel[j].y )<0) ) // 如果距离小于0.2米且速度反向
-                    flag++;
-            }
-            // ROS_INFO("flag = %d",flag);
-        }
-    
-    return flag > 3; // 如果有超过6对点满足条件，则认为震荡
-}
-
-/*
-函数10：计算临时避障点
- target: 目标点（世界坐标系）
- current: 当前位置（世界坐标系）
- dist: 障碍点相对机体的距离
- angle: 障碍点相对机体的角度（度）
- err: 输出错误码（CALC_SUCCESS/CALC_INVALID_PARAM）
-@return: 避障点（世界坐标系）
-*/
-
-/*
-输入格式：
-1.target，目标点，定义代码如下
-point target；
-target.x=<终点的x，类型为double>
-target.y=<终点的y，类型为double>
-2.curent，当前位置，同理
-curent.x=<>
-curent.y=<>
-3.dist，到最近避障点的距离
-4.angle,到最近避障点的角度
-5.err，错误码指针，定义代码如下
-CalcErr err;
-
-示例：
-
-
-
-  point target = {10, 0};
-    point current = {6, 0};
-    CalcErr err;
-    point waypoint = cal_temporary_waypoint(target, current, 5, 36, &err);
-
-
-
-*/
-float final_r = 7.0f; // 终点限制圆半径
-point cal_temporary_waypoint(point target, point current, float dist, int angle, CalcErr *err)
-{
-    point barrier_body, barrier_world, cross_point;
-    CalcErr inner_err = CALC_SUCCESS;
-
-    // 参数合法性检查，此部分是ai加的
-    if (dist < 0 || err == NULL)
+    // ================= 1. 初始化（首次调用） =================
+    static bool is_init = false; // 首次调用标记
+    static ros::Time start_time; // 计时器初始时间
+    if (!is_init)
     {
-        *err = CALC_INVALID_PARAM;
-        (point){NAN, NAN}; // 返回无效点
+        start_time = ros::Time::now(); // 首次调用初始化计时器
+        is_init = true;
+        ROS_INFO("圆锥避障任务启动，超时阈值：%.1f秒", time_final);
+    }
+
+    // ================= 2. 终止条件判断 =================
+    // 2.1 计时到达阈值
+    ros::Duration elapsed_time = ros::Time::now() - start_time;
+    if (elapsed_time.toSec() >= time_final)
+    {
+        ROS_WARN("圆锥避障任务超时（已耗时%.1f秒），准备降落！", elapsed_time.toSec());
+        is_init = false; // 重置初始化标记
+        return true;
     }
 
     // 2.2 到达目标点（距离误差满足要求）
@@ -453,9 +365,9 @@ point cal_temporary_waypoint(point target, point current, float dist, int angle,
     // ================= 3. 获取输入参数 =================
     // 3.1 无人机当前位置（二维，Eigen格式）
     Eigen::Vector2f UAV_pos = Eigen::Vector2f::Zero();
-    if (!current_pos.iszero())
+    if (!current_pos.isZero())
     {
-        UAV_vel = current_pos; // 直接取Eigen::Vector2f（无需转换）
+        UAV_pos = current_pos; // 直接取Eigen::Vector2f（无需转换）
     }
 
     // 3.2 无人机当前速度（二维，Eigen格式，取最新值）
