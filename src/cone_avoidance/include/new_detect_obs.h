@@ -97,7 +97,7 @@ public:
         
         Eigen::Vector2f drone_pos(local_pos.pose.pose.position.x, 
                                 local_pos.pose.pose.position.y);
-        Eigen::Vector2f target_pos(target_x, target_y);
+        Eigen::Vector2f target_pos(target_x + init_position_x_take_off, target_y + init_position_y_take_off); // 修复：目标点转绝对坐标
         
         processObstaclesWithMemory(clusters,drone_pos,target_pos);
 
@@ -214,7 +214,6 @@ private:
                          std::vector<pcl::PointCloud<pcl::PointXYZ>::Ptr>& clusters) {
         clusters.clear();
         cluster_indices.clear();
-        clusters.clear();
         if (input->empty()) return;
 
         // 设置聚类参数
@@ -279,7 +278,7 @@ private:
 
             // 3. 创建文本 marker（显示坐标）
             visualization_msgs::Marker text_marker;
-            text_marker.header.frame_id = "world";
+            text_marker.header.frame_id = "map";
             text_marker.header.stamp = ros::Time::now();
             text_marker.ns = "obstacle_labels";
             text_marker.id = i + 1000; // 避免 ID 冲突
@@ -302,33 +301,44 @@ private:
 
         // 清除上一帧的 markers（可选）
         visualization_msgs::Marker clear_marker;
-        clear_marker.header.frame_id = "world";
+        clear_marker.header.frame_id = "map";
         clear_marker.header.stamp = ros::Time::now();
         clear_marker.ns = "obstacle_circles";
         clear_marker.id = 0;
         clear_marker.action = visualization_msgs::Marker::DELETEALL;
         // 如果你用 DELETEALL，上面就不需要逐个管理 ID，但会闪一下
         // 这里我们不用 DELETEALL，靠 ID 更新
+        marker_array.markers.push_back(clear_marker);
+
+        visualization_msgs::Marker clear_text_marker;
+        clear_text_marker.header.frame_id = frame_id;
+        clear_text_marker.header.stamp = ros::Time::now();
+        clear_text_marker.ns = "obstacle_labels";
+        clear_text_marker.id = 0;
+        clear_text_marker.action = visualization_msgs::Marker::DELETEALL;
+        marker_array.markers.push_back(clear_text_marker);
 
         obstacle_marker_pub.publish(marker_array);
     }
 
-        // 判断线段 (p1,p2) 与 线段 (q1,q2) 是否相交
-    bool segmentsIntersect(
-        const Eigen::Vector2f& p1, const Eigen::Vector2f& p2,
-        const Eigen::Vector2f& q1, const Eigen::Vector2f& q2) {
-        if (!std::isfinite(p1.x()) || !std::isfinite(p1.y()) ||
-        !std::isfinite(p2.x()) || !std::isfinite(p2.y()) ||
-        !std::isfinite(q1.x()) || !std::isfinite(q1.y()) ||
-        !std::isfinite(q2.x()) || !std::isfinite(q2.y())) {
-        return false;
+    // 修复10：正确实现ccw函数，修复线段相交判断
+    bool ccw(const Eigen::Vector2f &a, const Eigen::Vector2f &b, const Eigen::Vector2f &c)
+    {
+        return (b.x() - a.x()) * (c.y() - a.y()) > (b.y() - a.y()) * (c.x() - a.x());
     }
-        auto ccw = [](const Eigen::Vector2f& a, const Eigen::Vector2f& b, const Eigen::Vector2f& c) {
-            float val=(c.y() - a.y()) * (b.x() - a.x()) > (b.y() - a.y()) * (c.x() - a.x());
-            return val>0;
-        };
-        
-        return ccw(p1, q1, q2) != ccw(p2, q1, q2) && ccw(p1, p2, q1) != ccw(p1, p2, q2);
+
+    bool segmentsIntersect(
+        const Eigen::Vector2f &p1, const Eigen::Vector2f &p2,
+        const Eigen::Vector2f &q1, const Eigen::Vector2f &q2)
+    {
+        if (!std::isfinite(p1.x()) || !std::isfinite(p1.y()) ||
+            !std::isfinite(p2.x()) || !std::isfinite(p2.y()) ||
+            !std::isfinite(q1.x()) || !std::isfinite(q1.y()) ||
+            !std::isfinite(q2.x()) || !std::isfinite(q2.y()))
+        {
+            return false;
+        }
+        return (ccw(p1, q1, q2) != ccw(p2, q1, q2)) && (ccw(p1, p2, q1) != ccw(p1, p2, q2));
     }
 
     // 判断点簇是否与路径 (drone → target) 相交
@@ -545,7 +555,7 @@ private:
                     0  // missed_count
                 });
                 // 新的障碍物也需要标记为已匹配
-                historical_obstacle_matched.push_back(true);
+                // historical_obstacle_matched.push_back(true);
             }
         }
 
