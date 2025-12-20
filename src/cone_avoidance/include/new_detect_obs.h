@@ -15,13 +15,13 @@
 #include<visualization_msgs/MarkerArray.h>
 #include<std_msgs/Header.h>
 #include<Eigen/StdVector>
+#include <tf/transform_listener.h>
 
 
 extern float target_x;
 extern float target_y;
 extern ros::NodeHandle nh;
 extern nav_msgs::Odometry local_pos;
-extern double yaw;
 extern float if_debug;
 extern float init_position_z_take_off;
 
@@ -152,11 +152,12 @@ private:
 
         float plx=local_pos.pose.pose.position.x;
         float ply=local_pos.pose.pose.position.y;
+        float pyaw=tf::getYaw(local_pos.pose.pose.orientation);
         const livox_ros_driver::CustomPoint* livox_points = livox_msg->points.data();
         pcl::PointXYZ* pcl_points = pcl_cloud->points.data();
 
-        const float cy = cosf(yaw);
-        const float sy = sinf(yaw);
+        const float cy = cosf(pyaw);
+        const float sy = sinf(pyaw);
 
         for (size_t i = 0; i < point_num; ++i) {
             if(livox_points[i].z>=-height_threshold_value&&livox_points[i].z<=height_threshold_value){
@@ -386,7 +387,6 @@ private:
         const Eigen::Vector2f& target_pos,
         Eigen::Vector2f& center,
         float& radius) {
-        
 
         if (cluster->empty()) return false;
 
@@ -481,7 +481,9 @@ private:
             
             if (validateAndFitObstacle(cluster, drone_position, target_position, obstacle_center, obstacle_radius)) {
                 // 半径过滤（避免过小/过大）
-                if (obstacle_radius >= min_obstacle_radius_ && obstacle_radius <= max_obstacle_radius_) {
+                if (obstacle_radius >= min_obstacle_radius_ && obstacle_radius <= max_obstacle_radius_
+                    && obstacle_center[0]<=drone_position[0]+3.5f && obstacle_center[0]>=drone_position[0]+1.5f
+                    && std::abs(obstacle_center[1]-drone_position[1])<=2.5f) {
                     new_detections.push_back({-1, obstacle_center, obstacle_radius, 0});
                 }
             }
