@@ -1,5 +1,6 @@
 #include <string>
 #include <vector>
+#include"new_detect_obs.h"
 #include <ros/ros.h>
 #include <geometry_msgs/PoseStamped.h>
 #include <geometry_msgs/Point.h>
@@ -25,6 +26,11 @@ using namespace std;
 #define ALTITUDE 0.7f
 
 mavros_msgs::PositionTarget setpoint_raw;
+
+Eigen::Vector2f current_pos; // 无人机历史位置（二维）
+Eigen::Vector2f current_vel; // 无人机历史速度（二维）
+Eigen::Vector2f current_pos; // 无人机历史位置（二维）
+Eigen::Vector2f current_vel; // 无人机历史速度（二维）
 
 /************************************************************************
 函数 1：无人机状态回调函数
@@ -91,17 +97,14 @@ void local_pos_cb(const nav_msgs::Odometry::ConstPtr &msg)
     local_pos = *msg;
     tf::quaternionMsgToTF(local_pos.pose.pose.orientation, quat); 
     tf::Matrix3x3(quat).getRPY(roll, pitch, yaw);
+    // 【修改1】存储Eigen::Vector2f格式的位置（替代原point结构体）
+    Eigen::Vector2f  current_pos(local_pos.pose.pose.position.x, local_pos.pose.pose.position.y);
 
-
-
-
-
-
-    current_pos.push_back(point{local_pos.pose.pose.position.x, local_pos.pose.pose.position.y});
+    // 【修改2】存储Eigen::Vector2f格式的速度（替代原Vel结构体）
     tf::Vector3 body_vel(local_pos.twist.twist.linear.x, local_pos.twist.twist.linear.y, local_pos.twist.twist.linear.z);
     tf::Matrix3x3 rot_matrix(quat);
     tf::Vector3 world_vel = rot_matrix * body_vel;
-    current_vel.push_back(Vel{world_vel.x(), world_vel.y()});
+    Eigen::Vector2f current_vel(world_vel.x(), world_vel.y());
 
     if (flag_init_position == false && (local_pos.pose.pose.position.z != 0))
     {
@@ -210,313 +213,153 @@ bool precision_land()
 计算激光雷达数据中的最小距离及其对应的角度索引
 返回值：无
 *************************************************************************/
-float distance_c;
-int angle_c;
 
-double zero_plane_height = 0.0; // 0度平面高度
-double height_threshold = 0.05; // 高度阈值
-double min_range = 0.1;         // 最小检测距离
-double max_range = 30.0;        // 最大检测距离
-int num_bins = 360;             // 角度分bin数量
+/*
+ * ===================== 参数定义 =====================
+ */
 
-// 用于存储每个角度bin的最小距离
-std::vector<float> distance_bins;
-std::vector<int> count_bins;
-void cal_min_distance()
+// CBF 参数
+float ALPHA = 2.0;
+float MAX_SPEED = 2.0;
+float OBS_EPS = 0.1;
+float KV = 0.2;
+float KN = 0.1;
+float W_goal = 0.8;
+float W_free = 0.2;
+
+/**
+ * @brief 基于 Control Barrier Function (CBF) 的一阶速度避障控制器
+ *
+ * 【函数功能】
+ * 本函数为无人机（或移动机器人）生成一个“安全速度指令” u，
+ * 在尽量跟随目标点方向运动的同时，保证与所有障碍物保持安全距离。
+ *
+ * 控制模型假设：
+ *   位置动力学： p_dot = u
+ *
+ * 核心思想：
+ * 1. 先生成一个指向目标的名义速度 u_des
+ * 2. 识别对当前运动构成威胁的“激活障碍物”
+ * 3. 构造一个参考速度 u_ref（目标驱动 + 避障启发）
+ * 4. 对每个激活障碍物施加 CBF 线性安全约束
+ * 5. 若违反约束，通过投影方式修正速度
+ * 6. 输出满足速度上限的安全控制量
+ *
+ * @param target     目标点位置
+ * @param UAV_pos    UAV 当前位姿
+ * @param UAV_vel    UAV 当前速度（用于障碍物激活判断）
+ * @param obstacles  圆形障碍物列表
+ * @param UAV_radius UAV 自身等效半径
+ *
+ * @return Eigen::Vector2f  满足 CBF 安全约束的速度指令
+ */
+Eigen::Vector2f applyCBF(
+    const Eigen::Vector2f &target,
+    const Eigen::Vector2f &UAV_pos,
+    const Eigen::Vector2f &UAV_vel,
+    const std::vector<Obstacle> &obstacles,
+    float UAV_radius)
 {
-    distance_c = distance_bins[min_range];
-    angle_c = 0;
-    for (int i = 0; i <= 359; i++)
+    /* ================= 1. 名义控制：指向目标 ================= */
+    Eigen::Vector2f u_dir = target - UAV_pos; // 指向目标的位移向量
+    if (u_dir.norm() > 1e-3)
+        u_dir.normalize();                 // 单位方向
+    Eigen::Vector2f u = MAX_SPEED * u_dir; // 名义速度 u_des
+
+    /* ================= 2. 激活障碍物筛选 ================= */
+    std::vector<Obstacle> active_obs;
+
+    for (const auto &obs : obstacles)
     {
-        if (distance_bins[i] < distance_c)
-        {
-            distance_c = distance_bins[i];
-            angle_c = i;
-        }
+        Eigen::Vector2f r_a = obs.position - UAV_pos; // UAV -> 障碍物
+        float R_sq = (UAV_radius + obs.radius) *
+                     (UAV_radius + obs.radius); // 安全半径平方
+
+        // CBF 函数 h(x) = ||r||^2 - (2R)^2
+        // 提前放大安全区域，用于更早介入避障
+        float h = r_a.squaredNorm() - 4.0f * R_sq;
+
+        // h_dot = ∇h · x_dot = -2 r^T v
+        float h_dot = -2.0f * r_a.dot(UAV_vel);
+
+        // 距离过近 且 正在靠近 → 激活该障碍物
+        if (h < 0 && h_dot < OBS_EPS)
+            active_obs.push_back(obs);
     }
-    ROS_WARN("Minimum Distance: %.2f m at Angle: %d deg", distance_c, angle_c);
-}
 
-/************************************************************************
-函数 6:lidar_cb
-点云回调函数，处理Livox雷达的点云数据，实现360度障碍物检测
-/livox/lidar example:
-
-*************************************************************************/
-
-void livox_custom_cb(const livox_ros_driver::CustomMsg::ConstPtr &livox_msg)
-{
-    // 初始化bins
-    // ROS_INFO("Received Livox point cloud with %d points", livox_msg->point_num);
-    distance_bins.assign(num_bins, max_range);
-    count_bins.assign(num_bins, 0);
-
-    int total_points = livox_msg->point_num;
-    int plane_points = 0;
-
-    // 遍历Livox自定义消息中的点
-    for (int i = 0; i < total_points; i++)
+    /* ================= 3. 自由空间方向（避障启发） ================= */
+    Eigen::Vector2f free_dir = Eigen::Vector2f::Zero();
+    for (const auto &obs : active_obs)
     {
-        const livox_ros_driver::CustomPoint &point = livox_msg->points[i];
+        Eigen::Vector2f r = obs.position - UAV_pos;
+        // 人工势场式排斥方向，指向远离障碍的自由空间
+        free_dir -= r / (r.squaredNorm() + 1e-3f);
+    }
+    if (free_dir.norm() > 1e-3)
+        free_dir.normalize();
 
-        float x = point.x;
-        float y = point.y;
-        float z = point.z;
+    /* ================= 4. 构造参考速度 ================= */
+    // 参考控制不是最终解，而是 CBF 约束投影的“目标点”
+    Eigen::Vector2f u_ref =
+        W_goal * u +                  // 目标跟踪项
+        W_free * free_dir * u.norm(); // 避障引导项
 
-        // 筛选0度平面附近的点
-        if (fabs(z - zero_plane_height) > height_threshold)
-        {
+    /* ================= 5. 修正权重（数值稳定） ================= */
+    // 障碍物越多、速度越大 → 修正越平缓
+    float w = 1.0f + KV * UAV_vel.norm() + KN * active_obs.size();
+
+    /* ================= 6. CBF 安全约束投影 ================= */
+    for (const auto &obs : active_obs)
+    {
+        Eigen::Vector2f r = obs.position - UAV_pos;
+        float dist_sq = r.dot(r);
+        float R_sq = (UAV_radius + obs.radius) * (UAV_radius + obs.radius);
+
+        // 安全裕度：避免数值问题
+        const float eps = 1e-6f;
+        if (dist_sq <= R_sq + eps) {
+            // 已经碰撞或非常接近，强制最大修正
+            Eigen::Vector2f grad_ds = 2.0f * r;
+            float correction = (ALPHA * (dist_sq - R_sq) - grad_ds.dot(u_ref)) / (grad_ds.dot(grad_ds) + eps);
+            u_ref -= correction * grad_ds; // 不加权重，全力避障
             continue;
         }
 
-        plane_points++;
+        Eigen::Vector2f grad_ds = 2.0f * r;
+        float cbf = ALPHA * (dist_sq - R_sq);
+        float violation = cbf - grad_ds.dot(u_ref);
 
-        // 计算距离和角度
-        float distance = sqrt(x * x + y * y);
-        float angle = atan2(y, x); // 弧度
-
-        // 转换为角度并映射到0-359
-        int angle_bin = static_cast<int>((angle * 180.0 / M_PI));
-
-        // 转换为0-359范围
-        if (angle_bin < 0)
-            angle_bin += 360;
-        if (angle_bin >= 360)
-            angle_bin -= 360;
-
-        // 确保在有效范围内
-        if (angle_bin >= 0 && angle_bin < num_bins)
+        if (violation > 0.0f)
         {
-            // 只保留每个角度bin的最小距离
-            if (distance >= min_range && distance <= max_range &&
-                !std::isinf(distance) && !std::isnan(distance))
-            {
-                if (distance < distance_bins[angle_bin])
-                {
-                    distance_bins[angle_bin] = distance;
-                }
-                count_bins[angle_bin]++;
-            }
+            // 距离越近，权重越大；使用归一化距离设计权重
+            float dist = std::sqrt(dist_sq);
+            float d_safe = std::sqrt(R_sq); // 最小安全距离
+
+            // 权重设计：当 dist 接近 d_safe 时，weight → 1；远大于时 → 趋近于 0
+            // 例如：weight = exp(-k * (dist - d_safe)) 或 sigmoid 形式
+            const float k_weight = 2.0f; // 调整灵敏度
+            float weight = std::exp(-k_weight * (dist - d_safe));
+
+            // 或者使用线性衰减（更简单）：
+            // float max_influence_dist = d_safe + 5.0f; // 5米外几乎不影响
+            // float weight = std::max(0.0f, (max_influence_dist - dist) / (max_influence_dist - d_safe));
+
+            float denom = grad_ds.dot(grad_ds) + eps;
+            float correction = violation / denom;
+
+            // 应用距离权重：只修正一部分，避免远障碍过度干扰
+            u_ref -= weight * correction * grad_ds;
         }
     }
-    for (int i = 0; i < num_bins; i++)
-    {
-        if (distance_bins[i] == 0)
-        {
-            distance_bins[i] = max_range; // 如果该bin没有点，则设为最大距离
-        }
-        // ROS_INFO("Angle Bin %d: Min Distance = %.2f m, Point Count = %d", i, distance_bins[i], count_bins[i]);
-    }
-    cal_min_distance();
+
+    /* ================= 7. 速度限幅 ================= */
+    if (u_ref.norm() > MAX_SPEED)
+        return u_ref.normalized() * MAX_SPEED;
+
+    return u_ref;
 }
 
-/************************************************************************
-函数 7: satfunc
-数据饱和函数，限制数据在±Max范围内
-*************************************************************************/
-float satfunc(float data, float Max)
-{
-    if (abs(data) > Max)
-        return (data > 0) ? Max : -Max;
-    else
-        return data;
-}
 
-/************************************************************************
-函数 8: collision_avoidance 避障函数
-根据激光雷达数据计算避障速度，并与追踪速度叠加，得到最终速度指令
-输入参数：目标位置target_x, target_y
-返回值：true/false表示是否到达目标点
-*************************************************************************/
-float R_outside, R_inside;      // 安全半径 [避障算法相关参数]
-float p_R;                      // 大圈比例参数
-float p_r;                      // 小圈比例参数
-float distance_cx, distance_cy; // 最近障碍物距离XY
-float vel_collision[2];         // 躲避障碍部分速度
-float vel_collision_max;        // 躲避障碍部分速度限幅
-float p_xy;                     // 追踪部分位置环P
-float vel_track[2];             // 追踪部分速度
-float vel_track_max;            // 追踪部分速度限幅
-
-float vel_sp_body[2];                    // 总速度
-float vel_sp_ENU[2];                     // ENU下的总速度
-float vel_sp_max;                        // 总速度限幅
-std_msgs::Bool flag_collision_avoidance; // 是否进入避障模式标志位
-// ========== 第七次修改：避障巡航超时阈值==========
-float collision_cruise_timeout = 25.0f;     // 避障巡航超时阈值默认值（秒）
-ros::Time collision_cruise_start_time;      // 避障巡航开始时间
-bool collision_cruise_flag = false;         // 避障巡航初始化标志
-bool collision_cruise_timeout_flag = false; // 避障巡航超时标志
-ros::Time last_request;
-// ========== 修改结束 ==========
-
-void rotation_yaw(float yaw_angle, float input[2], float output[2])
-{
-    output[0] = input[0] * cos(yaw_angle) - input[1] * sin(yaw_angle);
-    output[1] = input[0] * sin(yaw_angle) + input[1] * cos(yaw_angle);
-}
-
-bool collision_avoidance_mission(float target_x, float target_y, float target_z, float target_yaw, float err_max)
-{
-    // ========== 第七次：避障巡航首次进入初始化计时 ==========
-    if (!collision_cruise_flag)
-    {
-        collision_cruise_start_time = ros::Time::now();
-        collision_cruise_timeout_flag = false;
-        collision_cruise_flag = true;
-        // ROS_INFO("[避障巡航] 任务启动，超时阈值%.1f秒", collision_cruise_timeout);
-    }
-    // ========== 第七次：避障巡航超时判断逻辑 ==========
-    ros::Duration elapsed_time = ros::Time::now() - collision_cruise_start_time;
-    if (elapsed_time.toSec() > collision_cruise_timeout && !collision_cruise_timeout_flag)
-    {
-        ROS_WARN("[避障巡航超时] 已耗时%.1f秒（阈值%.1f秒），强制切换下一个任务！", elapsed_time.toSec(), collision_cruise_timeout);
-        collision_cruise_timeout_flag = true;
-        collision_cruise_flag = false; // 重置任务标志
-        return true;                   // 返回true表示任务完成（超时切换）
-    }
-    // ========== 新增结束 ==========
-    // 2. 根据最小距离判断：是否启用避障策略
-    if (distance_c >= R_outside)
-    {
-        flag_collision_avoidance.data = false;
-    }
-    else
-    {
-        flag_collision_avoidance.data = true;
-    }
-
-    // 3. 计算追踪速度,shijie
-    if(hypot(target_x - local_pos.pose.pose.position.x, target_y - local_pos.pose.pose.position.y) > 0.8){
-        vel_track[0] = p_xy * (target_x - local_pos.pose.pose.position.x);
-        vel_track[1] = p_xy * (target_y - local_pos.pose.pose.position.y);
-    }
-    else{
-        vel_track[0] = 2 * (target_x - local_pos.pose.pose.position.x);
-        vel_track[1] = 2 * (target_y - local_pos.pose.pose.position.y);
-    }
-
-    //速度限幅，第三处修改，改为对总体速度限幅，并比例缩小,强制合速度为max
-    float vel_combination=hypot(vel_track[0],vel_track[1]);
-    if(vel_combination>vel_sp_max)
-    {
-        vel_track[0]=vel_track[0]*vel_sp_max/vel_combination;
-        vel_track[1]=vel_track[1]*vel_sp_max/vel_combination;
-    }
-    vel_collision[0] = 0;
-    vel_collision[1] = 0;
-    ROS_WARN("Velocity Command Body before CA: vx: %.2f , vy: %.2f ", vel_track[0], vel_track[1]);
-
-    // 4. 避障策略
-    if (flag_collision_avoidance.data == true)
-    {
-        distance_cx = distance_c * cos(((float)angle_c) / 180 * 3.1415926);
-        distance_cy = distance_c * sin(((float)angle_c) / 180 * 3.1415926);
-        ROS_WARN("Angle_c: %d deg ", angle_c);
-        ROS_WARN("angle_c/180*3.1415926: %.2f rad ", angle_c / 180 * 3.1415926);
-        ROS_WARN("cos(angle_c/180*3.1415926): %.2f  ", cos(angle_c / 180 * 3.1415926));
-        ROS_WARN("Distance_cx: %.2f , Distance_cy: %.2f ", distance_cx, distance_cy);
-
-        float F_c;
-
-        F_c = 0;
-
-        if (distance_c > R_outside)
-        {
-            // 对速度不做限制
-            vel_collision[0] = vel_collision[0] + 0;
-            vel_collision[1] = vel_collision[1] + 0;
-            cout << " Forward Outside " << endl;
-        }
-
-        // 小幅度抑制移动速度
-        if (distance_c > R_inside && distance_c <= R_outside)
-        {
-            F_c = p_R * (R_outside - distance_c);
-        }
-
-        // 大幅度抑制移动速度
-        if (distance_c <= R_inside)
-        {
-            F_c = p_R * (R_outside - R_inside) + p_r * (R_inside - distance_c);
-        }
-        ROS_WARN("Force F_c: %.2f ", F_c);
-
-        //第一处修改，修改为更美观的写法！！！！！！！！
-        vel_collision[0] = vel_collision[0] - F_c * distance_cx / distance_c;
-        vel_collision[1] = vel_collision[1] - F_c * distance_cy / distance_c;
-      
-         //避障速度限幅，第五处修改，对避障速度限幅同第三处
-        float vel_collision_combination=hypot(vel_collision[0],vel_collision[1]);
-        if(vel_collision_combination>vel_collision_max)
-        {
-            vel_collision[0]=vel_collision[0]*vel_collision_max/vel_collision_combination;
-            vel_collision[1]=vel_collision[1]*vel_collision_max/vel_collision_combination;
-        }
-    }
-    // 5. 速度叠加，得到最终速度指令
-    rotation_yaw(-yaw, vel_track, vel_track);           // 追踪速度转机体坐标系
-    vel_sp_body[0] = vel_track[0] + vel_collision[0];
-    vel_sp_body[1] = vel_track[1] + vel_collision[1]; // dyx
-
-    //ROS_WARN("Velocity Command Body Track: vx: %.2f , vy: %.2f ", vel_track[0], vel_track[1]);
-    //ROS_WARN("Velocity Command Body Collision: vx: %.2f , vy: %.2f ", vel_collision[0], vel_collision[1]);
-    //ROS_WARN("Velocity Command Body after CA: vx: %.2f , vy: %.2f ", vel_sp_body[0], vel_sp_body[1]);
-
-    // 找当前位置到目标点的xy差值，如果出现其中一个差值小，另一个差值大，
-    // 且过了一会还是保持这个差值就开始从差值入手。
-    // 比如，y方向接近0，但x还差很多，但x方向有障碍，这个时候按discx cy的大小，缓解y的难题。
-
-    //第六处修改，总体速度限幅,同第三处
-    float vel_sp_combination=hypot(vel_sp_body[0],vel_sp_body[1]);
-    if(vel_sp_combination>vel_sp_max)
-    {
-        vel_sp_body[0]=vel_sp_body[0]*vel_sp_max/vel_sp_combination;
-        vel_sp_body[1]=vel_sp_body[1]*vel_sp_max/vel_sp_combination;
-    }
-
-    rotation_yaw(yaw, vel_sp_body, vel_sp_ENU);
-    setpoint_raw.type_mask = 1 + 2 /* + 4  +8 + 16 + 32 */ + 64 + 128 + 256 + 512 /*+ 1024 */ + 2048;
-    setpoint_raw.coordinate_frame = 1;
-    setpoint_raw.velocity.x = vel_sp_ENU[0];
-    setpoint_raw.velocity.y = vel_sp_ENU[1];
-    setpoint_raw.position.z = target_z + init_position_z_take_off;
-    setpoint_raw.yaw = target_yaw;
-
-    ROS_WARN("Velocity Command ENU: vx: %.2f , vy: %.2f ", vel_sp_ENU[0], vel_sp_ENU[1]);
-    ROS_WARN("Target Pos: ( %.2f, %.2f, %.2f )", target_x + init_position_x_take_off, target_y + init_position_y_take_off, target_z + init_position_z_take_off);
-    ROS_WARN("Current Pos: ( %.2f, %.2f, %.2f )", local_pos.pose.pose.position.x, local_pos.pose.pose.position.y, local_pos.pose.pose.position.z);
-
-    //ROS_INFO("fabs_x: %lf, fabs_y %lf", fabs(local_pos.pose.pose.position.x - target_x - init_position_x_take_off), fabs(local_pos.pose.pose.position.y - target_y - init_position_y_take_off));
-    
-    if (fabs(local_pos.pose.pose.position.x - target_x - init_position_x_take_off) < err_max && fabs(local_pos.pose.pose.position.y - target_y - init_position_y_take_off) < err_max && fabs(local_pos.pose.pose.position.z - target_z - init_position_z_take_off) < err_max && fabs(yaw - target_yaw) < 0.1)
-    {
-        static bool first_time = true;
-        if (first_time)
-        {
-            // ROS_INFO("到达目标点，开始避障任务完成处理");
-            last_request = ros::Time::now();
-            first_time = false;
-        }
-        // ROS_INFO("到达目标点（假点/原始目标），避障任务完成");
-        //
-        // ========== 第七次：避障巡航到达目标点重置超时标志 ==========
-        collision_cruise_flag = false;
-        collision_cruise_timeout_flag = false;
-        // ========== 新增结束 ==========
-         if (ros::Time::now() - last_request > ros::Duration(1.0))
-        {
-
-            last_request = ros::Time::now();
-            first_time = true;
-            return true;
-        }
-        
-
-        
-    }
-    return false;
-}
 /************************************************************************
 函数 9: stuck_detection 震荡检测函数
 根据位置回调数据，速度回调判断无人机是否处于震荡状态
@@ -594,113 +437,58 @@ point cal_temporary_waypoint(point target, point current, float dist, int angle,
         (point){NAN, NAN}; // 返回无效点
     }
 
-    // 1. 计算障碍点的机体坐标
-    double angle_rad =1.0*angle * M_PI / 180.0; // 角度转弧度
-    barrier_body.x = dist * cos(angle_rad);
-    barrier_body.y = dist * sin(angle_rad);
-
-    // 2. 机体坐标转世界坐标（补全注释要求的逻辑）
-    float yaw_rad = yaw;
-    // rotation_yaw(yaw, (float[]){(float)barrier_body.x, (float)barrier_body.y}, (float[]){(float)barrier_world.x, (float)barrier_world.y});//修改注释中的问题，先进行旋转
-    //手动进行旋转 25.12.12(18.58)
-    float barrier_world_x = barrier_body.x * cos(yaw_rad) - barrier_body.y * sin(yaw_rad);
-    float barrier_world_y = barrier_body.x * sin(yaw_rad) + barrier_body.y * cos(yaw_rad);
-    barrier_world.x = barrier_body.x + current.x;
-    barrier_world.y = barrier_body.y + current.y; // 既然机头不转动的话，可以直接相加求解？但是这样就和那个算法的错误一样了，暂且先这么着,已经修改了
-
-    // 3. 计算垂直线交点
-    segment seg = {current, barrier_world};
-    cross_point = getCross(seg, target, &inner_err);
-    *err = inner_err;
-
-    point temp_target;
-    // 4. 计算避障点
-    temp_target.x = 2 * cross_point.x - target.x;
-    temp_target.y = 2 * cross_point.y - target.y;
-
-
-    // ========== 6. 等比缩放至目标点的限制圆内 ==========
-    // 6.1 计算原始避障点到目标点的向量和距离
-    float vec_tx = temp_target.x - target.x; 
-    float vec_ty = temp_target.y - target.y; 
-    float dist_to_target = hypot(vec_tx, vec_ty);   // 原始避障点到目标点的距离
-
-    point temp_target_final;
-    // 6.2 若距离超过限制半径，等比缩放；否则直接保留
-    if (dist_to_target > final_r && dist_to_target > 1e-6)
-    {                                           // 避免除零
-        float scale = final_r / dist_to_target; // 缩放比例
-        temp_target_final.x = target.x + vec_tx * scale;
-        temp_target_final.y = target.y + vec_ty * scale;
-    }
-    else
+    // 2.2 到达目标点（距离误差满足要求）
+    float abs_target_x = target_x + init_position_x_take_off;
+    float abs_target_y = target_y + init_position_y_take_off;
+    float dist_x = local_pos.pose.pose.position.x - abs_target_x;
+    float dist_y = local_pos.pose.pose.position.y - abs_target_y;
+    float dist_xy = hypotf(dist_x, dist_y);
+    if (dist_xy < err_max && fabs(local_pos.pose.pose.position.z - (target_z + init_position_z_take_off)) < err_max)
     {
-        temp_target_final = temp_target; // 已在圆内，无需缩放
+        ROS_INFO("到达目标点（距离误差：%.3f米），准备降落！", dist_xy);
+        is_init = false; // 重置初始化标记
+        return true;
     }
 
-    return temp_target_final;
+    // ================= 3. 获取输入参数 =================
+    // 3.1 无人机当前位置（二维，Eigen格式）
+    Eigen::Vector2f UAV_pos = Eigen::Vector2f::Zero();
+    if (!current_pos.iszero())
+    {
+        UAV_vel = current_pos; // 直接取Eigen::Vector2f（无需转换）
+    }
+
+    // 3.2 无人机当前速度（二维，Eigen格式，取最新值）
+    Eigen::Vector2f UAV_vel = current_vel;
+
+    // 3.3 目标点（二维，绝对坐标，Eigen格式）
+    Eigen::Vector2f target(abs_target_x, abs_target_y);
+
+    // 3.4 障碍物列表（通过Livox回调获取点列，转换为Obstacle）
+    
+
+    // 3.5 无人机自身半径（传入参数）
+
+    // ================= 4. 调用CBF速度计算函数 =================
+    Eigen::Vector2f safe_vel = applyCBF(target, UAV_pos, UAV_vel, obstacles, UAV_radius);
+
+    // ================= 5. 设置速度控制指令 =================
+    // type_mask：关闭位置控制(1+2+4)，启用速度控制，关闭其他冗余控制
+    setpoint_raw.type_mask = 1 + 2 + 4 + 64 + 128 + 256 + 512 + 1024 + 2048;
+    setpoint_raw.coordinate_frame = 1;                             // 局部NED坐标系
+    setpoint_raw.velocity.x = safe_vel.x();                        // CBF输出x速度
+    setpoint_raw.velocity.y = safe_vel.y();                        // CBF输出y速度
+    setpoint_raw.position.z = target_z + init_position_z_take_off; // 固定z高度
+    setpoint_raw.yaw = target_yaw;                                 // 固定偏航角
+
+    // ================= 6. 日志输出 =================
+    ROS_INFO(
+        "当前位置：(%.2f, %.2f) | 目标点：(%.2f, %.2f) | 控制速度：(%.2f, %.2f) | 剩余时间：%.1f秒",
+        UAV_pos.x(), UAV_pos.y(),
+        target.x(), target.y(),
+        safe_vel.x(), safe_vel.y(),
+        time_final - elapsed_time.toSec());
+
+    // ================= 7. 未满足终止条件，继续执行 =================
+    return false;
 }
-
-/*
-函数11：计算线段seg的直线，与过point_p且垂直于该直线的交点
- seg:由当前位置和障碍点确定的线段
- point_p: 垂直线经过的点，即目标点
- err: 输出错误码（CALC_SUCCESS/CALC_DIV_ZERO）
- return: 交点（若出错返回NAN）
-*/
-point getCross(segment seg, point point_p, CalcErr *err)
-{
-    point cross = {NAN, NAN};
-    float dx = seg.p1.x - seg.p2.x;
-    float dy = seg.p1.y - seg.p2.y;
-
-    // 防护：基准线段为垂直线（dx=0）
-    if (fabs(dx) < 1e-8)
-    {
-        cross.x = seg.p1.x;
-        cross.y = point_p.y;
-        *err = CALC_SUCCESS;
-        return cross;
-    }
-
-    // 防护：基准线段为水平线（dy=0）
-    if (fabs(dy) < 1e-8)
-    {
-        cross.x = point_p.x;
-        cross.y = seg.p1.y;
-        *err = CALC_SUCCESS;
-        return cross;
-    }
-
-    // 常规情况：斜率不为0且非垂直
-    float slope1 = dy / dx;                            // 基准直线斜率
-    float intercept1 = seg.p1.y - slope1 * seg.p1.x;   // 基准直线截距
-    float slope2 = -1.0 / slope1;                      // 垂直线斜率
-    float intercept2 = point_p.y - slope2 * point_p.x; // 垂直线截距
-
-    cross.x = (intercept1 - intercept2) / (slope2 - slope1);
-    cross.y = slope1 * cross.x + intercept1;
-    *err = CALC_SUCCESS;
-
-    return cross;
-}
-/*
-使用说明
-
-1.有关计算临时目标点的函数：
-cal_temporary_waypoint(point target, point current, double dist, double angle, CalcErr *err)
-point target: 目标点（世界坐标系）
-需要看一下结构体的定义，传入一对x,y坐标
-point current: 当前位置（世界坐标系）
-double dist: 障碍点相对机体的距离
-double angle: 障碍点相对机体的角度（度）
-CalcErr *err: 输出错误码（CALC_SUCCESS/CALC_INVALID_PARAM）
-返回值: 避障点（世界坐标系）
-
-
-
-2.超时阈值配置说明：
-mission_cruise_timeout: 12.0   # 普通巡航超时阈值（秒）
-collision_cruise_timeout: 18.0 # 避障巡航超时阈值（秒）
-
-*/

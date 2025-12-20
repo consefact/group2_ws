@@ -5,6 +5,16 @@ int mission_num = 0;
 float if_debug = 0;
 float err_max = 0.2;
 const float HOVER_DURATION = 10.0f; // 降落悬停时间（秒）
+
+// 【可配置参数】
+float target_x = 5.0f;     // 目标点x（相对起飞点，米）
+float target_y = 0.0f;     // 目标点y（相对起飞点，米）
+float target_z = ALTITUDE; // 目标点z高度（米）
+float target_yaw = 0.0f;   // 目标偏航角（弧度）
+float UAV_radius = 0.3f;   // 无人机等效半径（米）
+float time_final = 70.0f;  // 超时时间（秒）
+
+
 void print_param()
 {
   std::cout << "=== 控制参数 ===" << std::endl;
@@ -29,9 +39,9 @@ int main(int argc, char **argv)
   ros::Subscriber state_sub = nh.subscribe<mavros_msgs::State>("mavros/state", 10, state_cb);
   ros::Subscriber local_pos_sub = nh.subscribe<nav_msgs::Odometry>("/mavros/local_position/odom", 10, local_pos_cb);
 
-  // 发布无人机多维控制话题
-  ros::Publisher mavros_setpoint_pos_pub = nh.advertise<mavros_msgs::PositionTarget>("/mavros/setpoint_raw/local", 100);
-  ros::Subscriber livox_sub = nh.subscribe<livox_ros_driver::CustomMsg>("/livox/lidar", 10, livox_cb_wrapper);
+    // 发布无人机多维控制话题
+    ros::Publisher mavros_setpoint_pos_pub = nh.advertise<mavros_msgs::PositionTarget>("/mavros/setpoint_raw/local", 100);
+    ros::Subscriber livox_sub = nh.subscribe<livox_ros_driver::CustomMsg>("/livox/lidar", 10, livox_cb_wrapper);
 
   // 创建服务客户端
   ros::ServiceClient arming_client = nh.serviceClient<mavros_msgs::CommandBool>("mavros/cmd/arming");
@@ -43,40 +53,46 @@ int main(int argc, char **argv)
 
   // 参数读取
 
-  nh.param<float>("err_max", err_max, 0);
-  nh.param<float>("if_debug", if_debug, 0);
-  nh.param<float>("target_x", target.x, 4.0);
-  nh.param<float>("target_y", target.y, 0.0);
-  nh.param<float>("mission_cruise_timeout", mission_cruise_timeout, mission_cruise_timeout);       // 读取普通巡航，第七次
-  nh.param<float>("collision_cruise_timeout", collision_cruise_timeout, collision_cruise_timeout); // 读取避障巡航，第七次
-  nh.param<float>("final_r", final_r,final_r); // 读取终点限制圆半径
-  ros::Timer timer1 = nh.createTimer(ros::Duration(2.0), time_c_b_pos);
-  ros::Timer timer2 = nh.createTimer(ros::Duration(2.0), time_c_b_vel);
-  print_param();
-  
+    nh.param<float>("err_max", err_max, 0);
+    nh.param<float>("if_debug", if_debug, 0);
+    nh.param<float>("target_x", target_x, 5.0f);
+    nh.param<float>("target_y", target_y, 0.0f);
+    nh.param<float>("target_yaw", target_yaw, 5.0f);
+    nh.param<float>("UAV_radius", UAV_radius, 0.3f);
+    nh.param<float>("time_final", time_final, 70.0f);
 
-  
-  int choice = 0;
-  std::cout << "1 to go on , else to quit" << std::endl;
-  std::cin >> choice;
-  if (choice != 1) return 0;
-  ros::spinOnce();
-  rate.sleep();
-  
-  // 等待连接到飞控
-  while (ros::ok() && !current_state.connected)
-  {
+    nh.param<float>("ALPHA", ALPHA, 2.0f);
+    nh.param<float>("MAX_SPEED", MAX_SPEED, 1.0f);
+    nh.param<float>("OBS_EPS", OBS_EPS, 0.1f);
+    nh.param<float>("KV", KV, 0.2f);
+    nh.param<float>("KN", KN, 0.05f);
+    nh.param<float>("W_goal", W_goal, 0.8f);
+    nh.param<float>("W_free", W_free, 0.2f);
+
+    print_param();
+
+    int choice = 0;
+    std::cout << "1 to go on , else to quit" << std::endl;
+    std::cin >> choice;
+    if (choice != 1)
+        return 0;
     ros::spinOnce();
     rate.sleep();
-  }
-  //设置无人机的期望位置
- 
-  setpoint_raw.type_mask = /*1 + 2 + 4 + 8 + 16 + 32*/ +64 + 128 + 256 + 512 /*+ 1024 + 2048*/;
-  setpoint_raw.coordinate_frame = 1;
-  setpoint_raw.position.x = 0;
-  setpoint_raw.position.y = 0;
-  setpoint_raw.position.z = ALTITUDE;
-  setpoint_raw.yaw = 0;
+
+    // 等待连接到飞控
+    while (ros::ok() && !current_state.connected)
+    {
+        ros::spinOnce();
+        rate.sleep();
+    }
+    // 设置无人机的期望位置
+
+    setpoint_raw.type_mask = /*1 + 2 + 4 + 8 + 16 + 32*/ +64 + 128 + 256 + 512 /*+ 1024 + 2048*/;
+    setpoint_raw.coordinate_frame = 1;
+    setpoint_raw.position.x = 0;
+    setpoint_raw.position.y = 0;
+    setpoint_raw.position.z = ALTITUDE;
+    setpoint_raw.yaw = 0;
 
   // send a few setpoints before starting
   for (int i = 100; ros::ok() && i > 0; --i)

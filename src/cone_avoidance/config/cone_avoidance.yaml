@@ -1,10 +1,18 @@
-err_max : 0.5
+err_max : 0.3
 if_debug : 1
 
 
-target_x : 5.0  
+target_x : 10.0  
+target_x : 10.0  
 target_y : 0.0  
 
 target_yaw : 0.0
 UAV_radius : 0.3
 time_final : 70.0
+ALPHA : 2.3
+MAX_SPEED : 0.5
+OBS_EPS : 0.1
+KV : -0.15
+KN : -0.05
+W_goal : 1.0
+W_free : 0.0
