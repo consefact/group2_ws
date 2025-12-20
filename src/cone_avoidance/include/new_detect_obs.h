@@ -1,3 +1,5 @@
+#ifndef NEW_DETECT_OBS_H
+#define NEW_DETECT_OBS_H
 #include<ros/ros.h>
 #include<livox_ros_driver/CustomMsg.h>
 #include<sensor_msgs/PointCloud.h>
@@ -42,6 +44,7 @@ const int min_neighbors{3};
 int max_cluster_size{150};     //最大簇大小，
 float min_obstacle_radius_{0.1f};  // 最小障碍物半径
 float max_obstacle_radius_{3.f};  // 最大障碍物半径
+float drone_radius=0.3f;
 
 class detect_obs{
 
@@ -152,7 +155,8 @@ private:
 
         float plx=local_pos.pose.pose.position.x;
         float ply=local_pos.pose.pose.position.y;
-        float pyaw=tf::getYaw(local_pos.pose.pose.orientation);
+        float pyaw=static_cast<float>(tf::getYaw(local_pos.pose.pose.orientation));
+        // ROS_INFO("pyaw:%.2f",pyaw);
         const livox_ros_driver::CustomPoint* livox_points = livox_msg->points.data();
         pcl::PointXYZ* pcl_points = pcl_cloud->points.data();
 
@@ -180,18 +184,26 @@ private:
                               }
 
     void filterDenseVoxels(const pcl::PointCloud<pcl::PointXYZ>::Ptr& input,pcl::PointCloud<pcl::PointXYZ>::Ptr& output){
-        if(input->empty()){
+        if(!input||input->empty()){
             output->clear();
             return;
         }
         kdtree.setInputCloud(input);
-
+        
+        // 检查点云是否有效
+        for(const auto& point : input->points){
+            if(!std::isfinite(point.x) || !std::isfinite(point.y) || !std::isfinite(point.z)){
+                std::cout << "警告：点云包含NaN或Inf值！" << std::endl;
+                output->clear();
+                return;
+            }
+        }
         output->clear();
         output->reserve(input->size());
         for (size_t i = 0; i < input->size(); ++i) {
             indices.clear();
             distances.clear();
-            int k = kdtree.radiusSearch(static_cast<int>(i), radius, indices, distances);
+            int k = kdtree.radiusSearch(input->points[i], radius, indices, distances);
             if (k >= min_neighbors) {
                 output->push_back(input->points[i]);
             }
@@ -376,7 +388,7 @@ private:
         for (const auto& pt : cluster->points) {
             float dx = pt.x - center.x();
             float dy = pt.y - center.y();
-            radius = std::max(radius, std::sqrt(dx*dx + dy*dy));
+            radius = std::max(radius, std::sqrt(dx*dx + dy*dy))+drone_radius;
         }
     }
 
@@ -413,6 +425,10 @@ private:
         }
         
         // 4. 其他情况：忽略
+
+        // fitMinimumEnclosingCircle(cluster, center, radius);
+        // return true;
+
         return false;
     }
 
@@ -482,7 +498,7 @@ private:
             if (validateAndFitObstacle(cluster, drone_position, target_position, obstacle_center, obstacle_radius)) {
                 // 半径过滤（避免过小/过大）
                 if (obstacle_radius >= min_obstacle_radius_ && obstacle_radius <= max_obstacle_radius_
-                    && obstacle_center[0]<=drone_position[0]+3.5f && obstacle_center[0]>=drone_position[0]+1.5f
+                    && obstacle_center[0]<=drone_position[0]+3.5f && obstacle_center[0]>=drone_position[0]-1.5f
                     && std::abs(obstacle_center[1]-drone_position[1])<=2.5f) {
                     new_detections.push_back({-1, obstacle_center, obstacle_radius, 0});
                 }
@@ -566,3 +582,5 @@ void livox_cb_wrapper(const livox_ros_driver::CustomMsg::ConstPtr& msg) {
     // 调用单例的成员函数
     detect_obs::getInstance().livox_custom_cb(msg);
 }
+
+#endif
