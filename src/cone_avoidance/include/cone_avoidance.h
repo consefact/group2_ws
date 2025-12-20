@@ -28,8 +28,8 @@ using namespace std;
 
 mavros_msgs::PositionTarget setpoint_raw;
 
-std::vector<Eigen::Vector2f> current_pos; // 无人机历史位置（二维）
-std::vector<Eigen::Vector2f> current_vel; // 无人机历史速度（二维）
+Eigen::Vector2f current_pos; // 无人机历史位置（二维）
+Eigen::Vector2f current_vel; // 无人机历史速度（二维）
 
 /************************************************************************
 函数 1：无人机状态回调函数
@@ -60,13 +60,13 @@ void local_pos_cb(const nav_msgs::Odometry::ConstPtr &msg)
     tf::quaternionMsgToTF(local_pos.pose.pose.orientation, quat);
     tf::Matrix3x3(quat).getRPY(roll, pitch, yaw);
     // 【修改1】存储Eigen::Vector2f格式的位置（替代原point结构体）
-    current_pos.push_back(Eigen::Vector2f(local_pos.pose.pose.position.x, local_pos.pose.pose.position.y));
+    Eigen::Vector2f current_pos(local_pos.pose.pose.position.x, local_pos.pose.pose.position.y);
 
     // 【修改2】存储Eigen::Vector2f格式的速度（替代原Vel结构体）
     tf::Vector3 body_vel(local_pos.twist.twist.linear.x, local_pos.twist.twist.linear.y, local_pos.twist.twist.linear.z);
     tf::Matrix3x3 rot_matrix(quat);
     tf::Vector3 world_vel = rot_matrix * body_vel;
-    current_vel.push_back(Eigen::Vector2f(world_vel.x(), world_vel.y()));
+    Eigen::Vector2f current_exception_vel(world_vel.x(), world_vel.y());
 
     if (flag_init_position == false && (local_pos.pose.pose.position.z > 0.1)) // 优化初始化阈值
     {
@@ -265,25 +265,42 @@ Eigen::Vector2f applyCBF(
     {
         Eigen::Vector2f r = obs.position - UAV_pos;
         float dist_sq = r.dot(r);
-        float R_sq = (UAV_radius + obs.radius) *
-                     (UAV_radius + obs.radius);
+        float R_sq = (UAV_radius + obs.radius) * (UAV_radius + obs.radius);
 
-        // h(x) = ||r||^2 - R^2
-        // -∇h = 2r
+        // 安全裕度：避免数值问题
+        const float eps = 1e-6f;
+        if (dist_sq <= R_sq + eps) {
+            // 已经碰撞或非常接近，强制最大修正
+            Eigen::Vector2f grad_ds = 2.0f * r;
+            float correction = (ALPHA * (dist_sq - R_sq) - grad_ds.dot(u_ref)) / (grad_ds.dot(grad_ds) + eps);
+            u_ref -= correction * grad_ds; // 不加权重，全力避障
+            continue;
+        }
+
         Eigen::Vector2f grad_ds = 2.0f * r;
-
-        // α h(x)，CBF 约束的松弛项
         float cbf = ALPHA * (dist_sq - R_sq);
-
-        // 违反量：cbf + ∇h^T u_ref
         float violation = cbf - grad_ds.dot(u_ref);
 
-        // 若违反 ∇h^T u ≥ -αh，则进行投影修正
         if (violation > 0.0f)
         {
-            // 单线性约束 QP 的解析投影解
-            float correction = violation / grad_ds.dot(grad_ds);
-            u_ref = u_ref - correction * grad_ds / w;
+            // 距离越近，权重越大；使用归一化距离设计权重
+            float dist = std::sqrt(dist_sq);
+            float d_safe = std::sqrt(R_sq); // 最小安全距离
+
+            // 权重设计：当 dist 接近 d_safe 时，weight → 1；远大于时 → 趋近于 0
+            // 例如：weight = exp(-k * (dist - d_safe)) 或 sigmoid 形式
+            const float k_weight = 2.0f; // 调整灵敏度
+            float weight = std::exp(-k_weight * (dist - d_safe));
+
+            // 或者使用线性衰减（更简单）：
+            // float max_influence_dist = d_safe + 5.0f; // 5米外几乎不影响
+            // float weight = std::max(0.0f, (max_influence_dist - dist) / (max_influence_dist - d_safe));
+
+            float denom = grad_ds.dot(grad_ds) + eps;
+            float correction = violation / denom;
+
+            // 应用距离权重：只修正一部分，避免远障碍过度干扰
+            u_ref -= weight * correction * grad_ds;
         }
     }
 
@@ -348,13 +365,17 @@ bool cone_avoidance_movement(float target_x, float target_y, float target_z,
 
     // ================= 3. 获取输入参数 =================
     // 3.1 无人机当前位置（二维，Eigen格式）
-    Eigen::Vector2f UAV_pos(local_pos.pose.pose.position.x, local_pos.pose.pose.position.y);
+    Eigen::Vector2f UAV_pos = Eigen::Vector2f::Zero();
+    if (!current_pos.iszero())
+    {
+        UAV_vel = current_pos; // 直接取Eigen::Vector2f（无需转换）
+    }
 
     // 3.2 无人机当前速度（二维，Eigen格式，取最新值）
     Eigen::Vector2f UAV_vel = Eigen::Vector2f::Zero(); // 默认0
-    if (!current_vel.empty())
+    if (!current_vel.iszero())
     {
-        UAV_vel = current_vel.back(); // 直接取Eigen::Vector2f（无需转换）
+        UAV_vel = current_vel; // 直接取Eigen::Vector2f（无需转换）
     }
 
     // 3.3 目标点（二维，绝对坐标，Eigen格式）
