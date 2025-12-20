@@ -179,6 +179,10 @@ float KN = 0.1;
 float W_goal = 0.8;
 float W_free = 0.2;
 
+// 新增：碰撞锥加权参数
+float COLLISION_CONE_WEIGHT_SCALE = 3.0f; // 碰撞锥权重缩放系数
+float MIN_HOVER_SPEED = 0.1f;             // 悬停时的最大速度阈值
+
 /**
  * @brief 基于 Control Barrier Function (CBF) 的一阶速度避障控制器
  *
@@ -205,6 +209,85 @@ float W_free = 0.2;
  *
  * @return Eigen::Vector2f  满足 CBF 安全约束的速度指令
  */
+
+/**
+ * @brief 计算碰撞锥相关参数（辅助函数）
+ * @param UAV_pos      无人机当前位置
+ * @param UAV_dir      无人机朝向目标的单位方向
+ * @param obs          单个障碍物
+ * @param UAV_radius   无人机等效半径
+ * @return std::tuple<float, float> 碰撞锥开度角(rad)、当前方向与锥中心线的夹角(rad)
+ */
+std::tuple<float, float> calculateCollisionCone(
+    const Eigen::Vector2f &UAV_pos,
+    const Eigen::Vector2f &UAV_dir,
+    const Obstacle &obs,
+    float UAV_radius)
+{
+    // 无人机到障碍物的向量
+    Eigen::Vector2f r = obs.position - UAV_pos;
+    float r_norm = r.norm();
+    if (r_norm < 1e-3)
+    {
+        return {M_PI, M_PI}; // 距离过近，默认最大锥角
+    }
+
+    // 碰撞锥开度角 θ：满足 sinθ = (R_uav + R_obs) / ||r||
+    float cone_opening_angle = asin(std::min(1.0f, (UAV_radius + obs.radius) / r_norm));
+    // 无人机朝向与障碍物方向的夹角 φ
+    float dir_angle = acos(std::max(-1.0f, std::min(1.0f, UAV_dir.dot(r.normalized()))));
+
+    return {cone_opening_angle, dir_angle};
+}
+
+/**
+ * @brief 检测CBF约束是否有可行解（拉格朗日数乘法无解判断）
+ * @param u_ref        参考速度
+ * @param active_obs   激活障碍物列表
+ * @param UAV_pos      无人机位置
+ * @param UAV_radius   无人机半径
+ * @return bool        true=有解，false=无解（需悬停）
+ */
+bool checkCBFConstraintFeasible(
+    const Eigen::Vector2f &u_ref,
+    const std::vector<Obstacle> &active_obs,
+    const Eigen::Vector2f &UAV_pos,
+    float UAV_radius)
+{
+    // 构建CBF线性约束：∇h·u ≤ α*h → a·u ≤ b
+    // 统计冲突的约束数量，若多数约束冲突则判定无解
+    int conflict_count = 0;
+    const float eps = 1e-6f;
+
+    for (const auto &obs : active_obs)
+    {
+        Eigen::Vector2f r = obs.position - UAV_pos;
+        float dist_sq = r.squaredNorm();
+        float R_sq = (UAV_radius + obs.radius) * (UAV_radius + obs.radius);
+        if (dist_sq <= R_sq + eps)
+        {
+            conflict_count++; // 已碰撞，直接判定冲突
+            continue;
+        }
+
+        Eigen::Vector2f grad_ds = 2.0f * r;
+        float cbf = ALPHA * (dist_sq - R_sq);
+        float violation = cbf - grad_ds.dot(u_ref);
+        if (violation > eps)
+        {
+            conflict_count++;
+        }
+    }
+
+    // 若超过50%的激活障碍物约束冲突，判定无解
+    return (active_obs.empty()) ? true : (conflict_count < active_obs.size() * 0.5f);
+}
+
+/**
+ * @brief 基于 Control Barrier Function (CBF) 的一阶速度避障控制器（优化版）
+ * 优化点1：碰撞锥加权 - 距离越近/碰撞锥重叠度越高，速度修正权重越大
+ * 优化点2：无解处理 - 拉格朗日约束无解时，无人机减速悬停
+ */
 Eigen::Vector2f applyCBF(
     const Eigen::Vector2f &target,
     const Eigen::Vector2f &UAV_pos,
@@ -213,30 +296,29 @@ Eigen::Vector2f applyCBF(
     float UAV_radius)
 {
     /* ================= 1. 名义控制：指向目标 ================= */
-    Eigen::Vector2f u_dir = target - UAV_pos; // 指向目标的位移向量
-    if (u_dir.norm() > 1e-3)
-        u_dir.normalize();                 // 单位方向
-    Eigen::Vector2f u = MAX_SPEED * u_dir; // 名义速度 u_des
+    Eigen::Vector2f u_dir = target - UAV_pos;
+    float u_dir_norm = u_dir.norm();
+    if (u_dir_norm > 1e-3)
+        u_dir.normalize();
+    Eigen::Vector2f u = MAX_SPEED * u_dir;
 
     /* ================= 2. 激活障碍物筛选 ================= */
     std::vector<Obstacle> active_obs;
-
     for (const auto &obs : obstacles)
     {
-        Eigen::Vector2f r_a = obs.position - UAV_pos; // UAV -> 障碍物
-        float R_sq = (UAV_radius + obs.radius) *
-                     (UAV_radius + obs.radius); // 安全半径平方
-
-        // CBF 函数 h(x) = ||r||^2 - (2R)^2
-        // 提前放大安全区域，用于更早介入避障
-        float h = r_a.squaredNorm() - 4.0f * R_sq;
-
-        // h_dot = ∇h · x_dot = -2 r^T v
+        Eigen::Vector2f r_a = obs.position - UAV_pos;
+        float R_sq = (UAV_radius + obs.radius) * (UAV_radius + obs.radius);
+        float h = r_a.squaredNorm() - 4.0f * R_sq; // 放大安全区域
         float h_dot = -2.0f * r_a.dot(UAV_vel);
 
-        // 距离过近 且 正在靠近 → 激活该障碍物
         if (h < 0 && h_dot < OBS_EPS)
             active_obs.push_back(obs);
+    }
+
+    // 无激活障碍物，直接返回名义速度
+    if (active_obs.empty())
+    {
+        return (u.norm() > MAX_SPEED) ? u.normalized() * MAX_SPEED : u;
     }
 
     /* ================= 3. 自由空间方向（避障启发） ================= */
@@ -244,36 +326,50 @@ Eigen::Vector2f applyCBF(
     for (const auto &obs : active_obs)
     {
         Eigen::Vector2f r = obs.position - UAV_pos;
-        // 人工势场式排斥方向，指向远离障碍的自由空间
         free_dir -= r / (r.squaredNorm() + 1e-3f);
     }
     if (free_dir.norm() > 1e-3)
         free_dir.normalize();
 
     /* ================= 4. 构造参考速度 ================= */
-    // 参考控制不是最终解，而是 CBF 约束投影的“目标点”
-    Eigen::Vector2f u_ref =
-        W_goal * u +                  // 目标跟踪项
-        W_free * free_dir * u.norm(); // 避障引导项
+    Eigen::Vector2f u_ref = W_goal * u + W_free * free_dir * u.norm();
 
-    /* ================= 5. 修正权重（数值稳定） ================= */
-    // 障碍物越多、速度越大 → 修正越平缓
+    /* ================= 5. 预检测：CBF约束是否有解 ================= */
+    bool is_feasible = checkCBFConstraintFeasible(u_ref, active_obs, UAV_pos, UAV_radius);
+    if (!is_feasible)
+    {
+        ROS_WARN("CBF约束无解（被障碍物包围），无人机减速悬停！");
+        return Eigen::Vector2f::Zero(); // 悬停：速度归零（或MIN_HOVER_SPEED）
+    }
+
+    /* ================= 6. 修正权重（数值稳定） ================= */
     float w = 1.0f + KV * UAV_vel.norm() + KN * active_obs.size();
 
-    /* ================= 6. CBF 安全约束投影 ================= */
+    /* ================= 7. CBF 安全约束投影（碰撞锥加权版） ================= */
     for (const auto &obs : active_obs)
     {
         Eigen::Vector2f r = obs.position - UAV_pos;
         float dist_sq = r.dot(r);
         float R_sq = (UAV_radius + obs.radius) * (UAV_radius + obs.radius);
-
-        // 安全裕度：避免数值问题
         const float eps = 1e-6f;
-        if (dist_sq <= R_sq + eps) {
-            // 已经碰撞或非常接近，强制最大修正
+
+        // 1. 计算碰撞锥参数（距离+锥重叠度加权）
+        auto [cone_opening, dir_angle] = calculateCollisionCone(UAV_pos, u_dir, obs, UAV_radius);
+        // 距离权重：距离越近，权重越大（1/r² 归一化）
+        float dist_weight = std::min(1.0f, R_sq / (dist_sq + eps));
+        // 碰撞锥权重：重叠度越高（dir_angle < cone_opening），权重越大
+        float cone_weight = (dir_angle < cone_opening)
+                                ? exp(COLLISION_CONE_WEIGHT_SCALE * (1 - dir_angle / cone_opening))
+                                : 0.1f;
+        // 最终加权系数（距离+碰撞锥）
+        float total_weight = dist_weight * cone_weight;
+
+        // 2. 核心CBF约束修正
+        if (dist_sq <= R_sq + eps)
+        {
             Eigen::Vector2f grad_ds = 2.0f * r;
             float correction = (ALPHA * (dist_sq - R_sq) - grad_ds.dot(u_ref)) / (grad_ds.dot(grad_ds) + eps);
-            u_ref -= correction * grad_ds; // 不加权重，全力避障
+            u_ref -= total_weight * correction * grad_ds; // 加权修正
             continue;
         }
 
@@ -283,34 +379,36 @@ Eigen::Vector2f applyCBF(
 
         if (violation > 0.0f)
         {
-            // 距离越近，权重越大；使用归一化距离设计权重
             float dist = std::sqrt(dist_sq);
-            float d_safe = std::sqrt(R_sq); // 最小安全距离
+            float d_safe = std::sqrt(R_sq);
 
-            // 权重设计：当 dist 接近 d_safe 时，weight → 1；远大于时 → 趋近于 0
-            // 例如：weight = exp(-k * (dist - d_safe)) 或 sigmoid 形式
-            const float k_weight = 2.0f; // 调整灵敏度
-            float weight = std::exp(-k_weight * (dist - d_safe));
-
-            // 或者使用线性衰减（更简单）：
-            // float max_influence_dist = d_safe + 5.0f; // 5米外几乎不影响
-            // float weight = std::max(0.0f, (max_influence_dist - dist) / (max_influence_dist - d_safe));
+            // 原有距离权重融合碰撞锥权重
+            float k_weight = 2.0f;
+            float distance_decay = std::exp(-k_weight * (dist - d_safe));
+            float weight = distance_decay * total_weight; // 最终权重
 
             float denom = grad_ds.dot(grad_ds) + eps;
             float correction = violation / denom;
 
-            // 应用距离权重：只修正一部分，避免远障碍过度干扰
             u_ref -= weight * correction * grad_ds;
         }
     }
 
-    /* ================= 7. 速度限幅 ================= */
-    if (u_ref.norm() > MAX_SPEED)
+    /* ================= 8. 速度限幅 + 悬停兜底 ================= */
+    // 若修正后速度仍过大，限幅；若速度过小，强制悬停
+    float ref_norm = u_ref.norm();
+    if (ref_norm < MIN_HOVER_SPEED)
+    {
+        ROS_INFO("无人机进入悬停状态（速度≤%.2fm/s）", MIN_HOVER_SPEED);
+        return Eigen::Vector2f::Zero(); // 完全悬停
+    }
+    else if (ref_norm > MAX_SPEED)
+    {
         return u_ref.normalized() * MAX_SPEED;
+    }
 
     return u_ref;
 }
-
 
 /************************************************************************
 函数 5: 圆锥避障前进函数（case2调用，每帧执行）
