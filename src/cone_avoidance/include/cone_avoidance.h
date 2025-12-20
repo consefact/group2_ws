@@ -30,8 +30,7 @@ mavros_msgs::PositionTarget setpoint_raw;
 
 Eigen::Vector2f current_pos; // 无人机历史位置（二维）
 Eigen::Vector2f current_vel; // 无人机历史速度（二维）
-Eigen::Vector2f current_pos; // 无人机历史位置（二维）
-Eigen::Vector2f current_vel; // 无人机历史速度（二维）
+
 
 /************************************************************************
 函数 1：无人机状态回调函数
@@ -61,14 +60,14 @@ void local_pos_cb(const nav_msgs::Odometry::ConstPtr &msg)
     local_pos = *msg;
     tf::quaternionMsgToTF(local_pos.pose.pose.orientation, quat);
     tf::Matrix3x3(quat).getRPY(roll, pitch, yaw);
-    // 【修改1】存储Eigen::Vector2f格式的位置（替代原point结构体）
-    Eigen::Vector2f  current_pos(local_pos.pose.pose.position.x, local_pos.pose.pose.position.y);
+    // 【修改1】赋值给全局变量，而非定义局部变量覆盖
+    current_pos = Eigen::Vector2f(local_pos.pose.pose.position.x, local_pos.pose.pose.position.y);
 
     // 【修改2】存储Eigen::Vector2f格式的速度（替代原Vel结构体）
     tf::Vector3 body_vel(local_pos.twist.twist.linear.x, local_pos.twist.twist.linear.y, local_pos.twist.twist.linear.z);
     tf::Matrix3x3 rot_matrix(quat);
     tf::Vector3 world_vel = rot_matrix * body_vel;
-    Eigen::Vector2f current_vel(world_vel.x(), world_vel.y());
+    current_vel = Eigen::Vector2f(world_vel.x(), world_vel.y());
 
     if (flag_init_position == false && (local_pos.pose.pose.position.z > 0.1)) // 优化初始化阈值
     {
@@ -366,11 +365,7 @@ bool cone_avoidance_movement(float target_x, float target_y, float target_z,
 
     // ================= 3. 获取输入参数 =================
     // 3.1 无人机当前位置（二维，Eigen格式）
-    Eigen::Vector2f UAV_pos = Eigen::Vector2f::Zero();
-    if (!current_pos.iszero())
-    {
-        UAV_vel = current_pos; // 直接取Eigen::Vector2f（无需转换）
-    }
+    Eigen::Vector2f UAV_pos = current_pos;
 
     // 3.2 无人机当前速度（二维，Eigen格式，取最新值）
     Eigen::Vector2f UAV_vel = current_vel;

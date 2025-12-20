@@ -58,7 +58,7 @@ int main(int argc, char **argv)
     nh.param<float>("if_debug", if_debug, 0);
     nh.param<float>("target_x", target_x, 5.0f);
     nh.param<float>("target_y", target_y, 0.0f);
-    nh.param<float>("target_yaw", target_yaw, 5.0f);
+    nh.param<float>("target_yaw", target_yaw, 0.0f);
     nh.param<float>("UAV_radius", UAV_radius, 0.3f);
     nh.param<float>("time_final", time_final, 70.0f);
 
@@ -174,7 +174,7 @@ int main(int argc, char **argv)
                 mission_num = 2;
                 last_request = ros::Time::now();
             }
-            else if (ros::Time::now() - last_request >= ros::Duration(3.0))
+            else if (ros::Time::now() - last_request >= ros::Duration(9.0))
             {
                 mission_num = 2;
                 last_request = ros::Time::now();
@@ -195,20 +195,22 @@ int main(int argc, char **argv)
                 mission_num = 3; // 完成避障，切换到降落任务
                 break;
             }
+            // 修复15：仅在避障函数内发布速度指令，避免重复发布
+            mavros_setpoint_pos_pub.publish(setpoint_raw);
             break;
         }
-            
-        
 
-        // 降落
+            // 降落
         case 3:
         {
-            // ========== 新增降落悬停变量 ==========
-            static ros::Time land_hover_start;      // 降落悬停开始时间
-            static bool is_land_hovering = false;   // 是否正在降落悬停
-            static bool is_land_hover_done = false; // 降落悬停是否完成
-
-            last_request = ros::Time::now();
+            // ========== 新增：固定悬停目标坐标（仅初始化一次） ==========
+            static ros::Time land_hover_start;                   // 降落悬停开始时间
+            static bool is_land_hovering = false;                // 是否正在降落悬停
+            static bool is_land_hover_done = false;              // 降落悬停是否完成
+            static float hover_target_x;                         // 悬停目标x（固定值）
+            static float hover_target_y;                         // 悬停目标y（固定值）
+            static float hover_target_z;                         // 悬停目标z（固定值）
+            static ros::Time land_start_time = ros::Time::now(); // 降落开始时间
 
             // 未到达降落点：执行精确定位降落
             if (!is_land_hover_done && !is_land_hovering)
@@ -216,26 +218,40 @@ int main(int argc, char **argv)
                 if (precision_land())
                 {
                     ROS_WARN("到达降落点，开始悬停10秒！");
-                    is_land_hovering = true;             // 标记开始降落悬停
-                    land_hover_start = ros::Time::now(); // 记录悬停开始时间
+                    is_land_hovering = true;
+                    land_hover_start = ros::Time::now();
+                    // 关键修复：记录悬停瞬间的坐标作为固定目标（仅赋值一次）
+                    hover_target_x = local_pos.pose.pose.position.x;
+                    hover_target_y = local_pos.pose.pose.position.y;
+                    hover_target_z = local_pos.pose.pose.position.z; // 或固定为0.1米（贴地悬停）
+                    ROS_INFO("固定悬停目标坐标：(%.2f, %.2f, %.2f)", hover_target_x, hover_target_y, hover_target_z);
                 }
-                else if (ros::Time::now() - last_request > ros::Duration(20.0))
+                else if (ros::Time::now() - land_start_time > ros::Duration(20.0))
                 {
                     ROS_WARN("降落超时，强制悬停10秒后结束任务！");
                     is_land_hovering = true;
                     land_hover_start = ros::Time::now();
+                    // 强制悬停时也记录固定目标坐标
+                    hover_target_x = local_pos.pose.pose.position.x;
+                    hover_target_y = local_pos.pose.pose.position.y;
+                    hover_target_z = local_pos.pose.pose.position.z;
+                    ROS_INFO("强制悬停目标坐标：(%.2f, %.2f, %.2f)", hover_target_x, hover_target_y, hover_target_z);
                 }
             }
             // 降落悬停逻辑
             else if (is_land_hovering)
             {
-                // 悬停期间：保持降落点位置悬停
-                mission_pos_cruise(local_pos.pose.pose.position.x,
-                                   local_pos.pose.pose.position.y,
-                                   local_pos.pose.pose.position.z, 0, err_max);
+                // 关键修复：使用固定的悬停目标坐标，而非实时波动的坐标
+                mission_pos_cruise(hover_target_x, // 固定x
+                                   hover_target_y, // 固定y
+                                   hover_target_z, // 固定z（可选：改为0.1f实现贴地悬停）
+                                   0, err_max);
                 mavros_setpoint_pos_pub.publish(setpoint_raw);
-                ROS_INFO("降落点悬停中，剩余时长：%.1f秒",
-                         HOVER_DURATION - (ros::Time::now() - land_hover_start).toSec());
+
+                // 计算剩余悬停时间
+                float remain_time = HOVER_DURATION - (ros::Time::now() - land_hover_start).toSec();
+                ROS_INFO("降落点悬停中，剩余时长：%.1f秒 | 目标坐标：(%.2f, %.2f)",
+                         remain_time, hover_target_x, hover_target_y);
 
                 // 悬停满10秒：结束任务
                 if (ros::Time::now() - land_hover_start > ros::Duration(HOVER_DURATION))
@@ -248,15 +264,13 @@ int main(int argc, char **argv)
             }
             break;
         }
-        }
-        mavros_setpoint_pos_pub.publish(setpoint_raw);
-        ros::spinOnce();
-        rate.sleep();
-
-        if (mission_num == -1)
-        {
-            exit(0);
-        }
+            // 修复18：移除重复的publish调用，仅在必要时发布
+            ros::spinOnce();
+            rate.sleep();
+            if (mission_num == -1)
+            {
+                exit(0);
+            }
     }
     return 0;
 }
