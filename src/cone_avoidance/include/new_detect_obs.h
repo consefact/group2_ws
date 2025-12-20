@@ -17,7 +17,6 @@
 #include<Eigen/StdVector>
 
 
-extern point target;
 extern float target_x;
 extern float target_y;
 extern ros::NodeHandle nh;
@@ -26,19 +25,21 @@ extern double yaw;
 extern float if_debug;
 extern float init_position_z_take_off;
 
-struct Obstacle
-{
+struct Obstacle{
     int id;
     Eigen::Vector2f position;
     float radius;
+    int missed_count;
 };
 std::vector<Obstacle> obstacles;
+const float matching_distance_threshold{1.0f};
+const int max_missed_frames{5};
 
 constexpr float height_threshold_value{0.05};
 const float voxel_size_{0.04f};           // 体素滤波尺寸
 const float radius{0.5f};
 const int min_neighbors{3};
-int max_cluster_size{150};
+int max_cluster_size{150};     //最大簇大小，
 float min_obstacle_radius_{0.1f};  // 最小障碍物半径
 float max_obstacle_radius_{3.f};  // 最大障碍物半径
 
@@ -57,6 +58,8 @@ private:
     std::vector<pcl::PointIndices> cluster_indices;
     std::vector<pcl::PointCloud<pcl::PointXYZ>::Ptr> clusters;
     ros::Publisher obstacle_marker_pub;
+    static std::vector<Obstacle> historical_obstacles;
+    static int next_id;
 public:
 
     static detect_obs& getInstance() {
@@ -93,21 +96,8 @@ public:
                                 local_pos.pose.pose.position.y);
         Eigen::Vector2f target_pos(target_x, target_y);
         
-        obstacles.clear();
-        int id = 0;
-        for (auto& cluster : clusters) {
-            Eigen::Vector2f center;
-            float radius;
-            
-            if (validateAndFitObstacle(cluster, drone_pos, target_pos, center, radius)) {
-        //         // 半径过滤（避免过小/过大）
-                if (radius >= min_obstacle_radius_ && radius <= max_obstacle_radius_) {
-                    obstacles.push_back({id++, center, radius});
-        // ROS_INFO("do it");
-                }
-            }
-        }
-        
+        processObstaclesWithMemory(clusters,drone_pos,target_pos);
+
         static int log_count = 0;
         if (if_debug == 1 && ++log_count % 10 == 0) {
             ROS_INFO("Drone: (%.2f, %.2f), Target: (%.2f, %.2f)", 
@@ -472,8 +462,103 @@ private:
         float std_dev = std::sqrt(var / radii.size());
         circularity = std_dev / (radius + 1e-6f);
     }
+    
+    void processObstaclesWithMemory(
+        const std::vector<pcl::PointCloud<pcl::PointXYZ>::Ptr>& current_clusters,
+        const Eigen::Vector2f& drone_position,
+        const Eigen::Vector2f& target_position) {
+        
+        // 清空当前帧的障碍物列表
+        obstacles.clear();
+        // 创建标记数组，记录哪些历史障碍物在当前帧被匹配到
+        std::vector<bool> historical_obstacle_matched(historical_obstacles.size(), false);
+
+        // 1. 处理新检测到的障碍物，并尝试与历史障碍物匹配
+        std::vector<Obstacle> new_detections;
+        for (auto& cluster : current_clusters) {
+            Eigen::Vector2f obstacle_center;
+            float obstacle_radius;
+            
+            if (validateAndFitObstacle(cluster, drone_position, target_position, obstacle_center, obstacle_radius)) {
+                // 半径过滤（避免过小/过大）
+                if (obstacle_radius >= min_obstacle_radius_ && obstacle_radius <= max_obstacle_radius_) {
+                    new_detections.push_back({-1, obstacle_center, obstacle_radius, 0});
+                }
+            }
+        }
+
+        // 2. 尝试将新检测到的障碍物与历史障碍物匹配
+        for (size_t i = 0; i < new_detections.size(); ++i) {
+            Eigen::Vector2f new_center = new_detections[i].position;
+            float new_radius = new_detections[i].radius;
+            bool matched_new = false;
+            
+            // 查找最近的历史障碍物
+            int best_match_idx = -1;
+            float min_distance = std::numeric_limits<float>::max();
+            
+            for (size_t j = 0; j < historical_obstacles.size(); ++j) {
+                float distance = (historical_obstacles[j].position - new_center).norm();
+                if (distance < min_distance && distance <= matching_distance_threshold) {
+                    min_distance = distance;
+                    best_match_idx = j;
+                }
+            }
+            
+            // 如果找到匹配的历史障碍物
+            if (best_match_idx != -1) {
+                // 微调位置：使用加权平均，给新检测更高的权重
+                float alpha = 0.7f; // 新检测的权重
+                historical_obstacles[best_match_idx].position = 
+                    alpha * new_center + (1.0f - alpha) * historical_obstacles[best_match_idx].position;
+                historical_obstacles[best_match_idx].radius = 
+                    alpha * new_radius + (1.0f - alpha) * historical_obstacles[best_match_idx].radius;
+                historical_obstacles[best_match_idx].missed_count = 0; // 重置未检测计数
+                historical_obstacle_matched[best_match_idx] = true;
+                matched_new = true;
+            }
+            
+            // 如果没有匹配到历史障碍物，创建新的
+            if (!matched_new) {
+                historical_obstacles.push_back({
+                    next_id++, 
+                    new_center, 
+                    new_radius, 
+                    0  // missed_count
+                });
+                // 新的障碍物也需要标记为已匹配
+                historical_obstacle_matched.push_back(true);
+            }
+        }
+
+        // 3. 更新未匹配的历史障碍物的missed_count
+        for (size_t j = 0; j < historical_obstacles.size(); ++j) {
+            if (!historical_obstacle_matched[j]) {
+                historical_obstacles[j].missed_count++;
+            }
+        }
+
+        // 4. 删除连续未检测到超过阈值的障碍物
+        auto it = historical_obstacles.begin();
+        while (it != historical_obstacles.end()) {
+            if (it->missed_count > max_missed_frames) {
+                it = historical_obstacles.erase(it);
+            } else {
+                ++it;
+            }
+        }
+
+        // 5. 将剩余的历史障碍物作为当前帧的输出
+        int output_id = 0;
+        for (auto& obs : historical_obstacles) {
+            obstacles.push_back({output_id++, obs.position, obs.radius, obs.missed_count});
+        }
+    }
+
 };
 
+std::vector<Obstacle> detect_obs::historical_obstacles;
+int detect_obs::next_id{0};
 // 全局包装函数：暴露给外部的cb入口（看起来像全局函数）
 void livox_cb_wrapper(const livox_ros_driver::CustomMsg::ConstPtr& msg) {
     // 调用单例的成员函数

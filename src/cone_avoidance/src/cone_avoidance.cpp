@@ -15,7 +15,6 @@ float UAV_radius = 0.3f;   // 无人机等效半径（米）
 float time_final = 70.0f;  // 超时时间（秒）
 
 
-
 void print_param()
 {
     std::cout << "=== 控制参数 ===" << std::endl;
@@ -63,8 +62,14 @@ int main(int argc, char **argv)
     nh.param<float>("UAV_radius", UAV_radius, 0.3f);
     nh.param<float>("time_final", time_final, 70.0f);
 
-    ros::Timer timer1 = nh.createTimer(ros::Duration(2.0), time_c_b_pos);
-    ros::Timer timer2 = nh.createTimer(ros::Duration(2.0), time_c_b_vel);
+    nh.param<float>("ALPHA", ALPHA, 2.0f);
+    nh.param<float>("MAX_SPEED", MAX_SPEED, 1.0f);
+    nh.param<float>("OBS_EPS", OBS_EPS, 0.1f);
+    nh.param<float>("KV", KV, 0.2f);
+    nh.param<float>("KN", KN, 0.05f);
+    nh.param<float>("W_goal", W_goal, 0.8f);
+    nh.param<float>("W_free", W_free, 0.2f);
+
     print_param();
 
     int choice = 0;
