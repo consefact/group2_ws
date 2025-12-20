@@ -25,6 +25,8 @@ extern float target_y;
 extern ros::NodeHandle nh;
 extern nav_msgs::Odometry local_pos;
 extern float if_debug;
+extern float init_position_x_take_off;
+extern float init_position_y_take_off;
 extern float init_position_z_take_off;
 
 struct Obstacle{
@@ -311,7 +313,7 @@ private:
         marker_array.markers.push_back(clear_marker);
 
         visualization_msgs::Marker clear_text_marker;
-        clear_text_marker.header.frame_id = frame_id;
+        clear_text_marker.header.frame_id = "map";
         clear_text_marker.header.stamp = ros::Time::now();
         clear_text_marker.ns = "obstacle_labels";
         clear_text_marker.id = 0;
