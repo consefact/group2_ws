@@ -205,10 +205,9 @@ std::tuple<float, float> calculateCollisionCone(
     float dir_angle = acos(std::max(-1.0f, std::min(1.0f, UAV_dir.dot(r.normalized()))));
 
     return {cone_opening_angle, dir_angle};
-}
-/**
- * @brief 选择最优/融合切点（核心修改：选到目标更远的切点）
- */
+} /**
+   * @brief 选择最优切点（核心修改：选y坐标相对于无人机最远的切点，多障碍直接选全局最远）
+   */
 Eigen::Vector2f selectOptimalTangent(
     const std::vector<ObsRound> &obs_rounds,
     const Eigen::Vector2f &UAV_pos,
@@ -218,50 +217,60 @@ Eigen::Vector2f selectOptimalTangent(
     if (obs_rounds.empty())
         return target;
 
-    // 单障碍物：选到目标更远的切点（核心修改：dist_left > dist_right）
+    // 提取无人机当前y坐标（核心参考值）
+    float uav_y = UAV_pos.y();
+
+    // 单障碍物：选该障碍左/右切点中y坐标最远的（|y_tangent - uav_y|最大）
     if (obs_rounds.size() == 1)
     {
-        float dist_left = (obs_rounds[0].left_point - target).norm();
-        float dist_right = (obs_rounds[0].right_point - target).norm();
-        // 原逻辑：dist_left < dist_right → 选左；现在：dist_left > dist_right → 选左（远的）
-        std::cout<<"单障碍物避障，选择切点距离目标距离：左切点="<<dist_left<<",右切点="<<dist_right<<std::endl;
-        return dist_left > dist_right ? obs_rounds[0].left_point : obs_rounds[0].right_point;
+        const auto &obs = obs_rounds[0];
+        // 计算左/右切点y与无人机y的绝对值差
+        float left_y_diff = fabs(obs.left_point.y() - uav_y);
+        float right_y_diff = fabs(obs.right_point.y() - uav_y);
+
+        // 选y差值更大的切点
+        Eigen::Vector2f selected_tangent = (left_y_diff > right_y_diff) ? obs.left_point : obs.right_point;
+
+        ROS_INFO("单障碍切点选择：左切点y=%.2f（差=%.2f），右切点y=%.2f（差=%.2f），选y最远切点=(%.2f,%.2f)",
+                 obs.left_point.y(), left_y_diff, obs.right_point.y(), right_y_diff,
+                 selected_tangent.x(), selected_tangent.y());
+        return selected_tangent;
     }
 
-    // 多障碍物：直接选全局最远切点（距离无人机）
-    Eigen::Vector2f farthest_tangent; // 全局最远切点
-    float max_dist = -1.0f;           // 最远距离（初始为负数，确保首次赋值）
+    // 多障碍物：直接选全局y坐标最远的切点（|y_tangent - uav_y|最大）
+    Eigen::Vector2f farthest_tangent; // 全局y最远切点
+    float max_y_diff = -1.0f;         // 最大y差值（初始为负，确保首次赋值）
 
     for (const auto &obs : obs_rounds)
     {
-        // 步骤1：给当前障碍选左/右切点中距离无人机更远的
-        float dist_left_uav = (obs.left_point - UAV_pos).norm();
-        float dist_right_uav = (obs.right_point - UAV_pos).norm();
-        Eigen::Vector2f obs_farthest = dist_left_uav > dist_right_uav ? obs.left_point : obs.right_point;
-        float obs_farthest_dist = dist_left_uav > dist_right_uav ? dist_left_uav : dist_right_uav;
+        // 步骤1：给当前障碍选左/右切点中y坐标最远的
+        float left_y_diff = fabs(obs.left_point.y() - uav_y);
+        float right_y_diff = fabs(obs.right_point.y() - uav_y);
+        Eigen::Vector2f obs_farthest = (left_y_diff > right_y_diff) ? obs.left_point : obs.right_point;
+        float obs_y_diff = (left_y_diff > right_y_diff) ? left_y_diff : right_y_diff;
 
-        // 步骤2：对比当前障碍的最远切点与全局最远切点，保留更远的
-        if (obs_farthest_dist > max_dist)
+        // 步骤2：对比当前障碍的y最远切点与全局，保留更远的
+        if (obs_y_diff > max_y_diff)
         {
-            max_dist = obs_farthest_dist;
+            max_y_diff = obs_y_diff;
             farthest_tangent = obs_farthest;
         }
 
-        // 保留原有日志（补充距离无人机的信息）
-        ROS_INFO("障碍切点：左(%.2f, %.2f)距无人机=%.2f | 右(%.2f, %.2f)距无人机=%.2f | 选该障碍最远切点=(%.2f,%.2f)",
-                 obs.left_point.x(), obs.left_point.y(), dist_left_uav,
-                 obs.right_point.x(), obs.right_point.y(), dist_right_uav,
+        // 日志：输出当前障碍的切点y信息
+        ROS_INFO("障碍切点：左(%.2f, %.2f)y差=%.2f | 右(%.2f, %.2f)y差=%.2f | 选该障碍y最远切点=(%.2f,%.2f)",
+                 obs.left_point.x(), obs.left_point.y(), left_y_diff,
+                 obs.right_point.x(), obs.right_point.y(), right_y_diff,
                  obs_farthest.x(), obs_farthest.y());
     }
 
-    // 边界处理：若所有距离为0（极端情况），返回目标点
-    if (max_dist < 1e-3)
+    // 边界处理：若所有y差值为0（极端情况），返回目标点
+    if (max_y_diff < 1e-3)
     {
-        ROS_WARN("所有切点距离无人机过近，返回目标点");
+        ROS_WARN("所有切点y坐标与无人机几乎重合，返回目标点");
         return target;
     }
 
-    ROS_INFO("多障碍全局最远切点（距无人机=%.2f）：(%.2f,%.2f)", max_dist, farthest_tangent.x(), farthest_tangent.y());
+    ROS_INFO("多障碍全局y最远切点（y差=%.2f）：(%.2f,%.2f)", max_y_diff, farthest_tangent.x(), farthest_tangent.y());
     return farthest_tangent;
 }
 /**
