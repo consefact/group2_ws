@@ -291,13 +291,13 @@ Eigen::Vector2f coneAvoidanceByTangent(
     const Eigen::Vector2f &UAV_vel)
 {
     // 常量定义（复用原有参数）
-    const float MAX_SPEED = 5.0f;
+    const float MAX_SPEED = 2.0f;
     const float MIN_HOVER_SPEED = 0.1f;
     const float err_max = 0.2f;      // 复用原有误差阈值
     const float ROTATE_SPEED = 0.1f; // 弧形旋转角速度（rad/s）
 
     // 步骤1：筛选激活障碍物
-    std::vector<ObsRound> active_obs = getActiveObs(obs_rounds, UAV_pos, target);
+    static std::vector<ObsRound> active_obs = getActiveObs(obs_rounds, UAV_pos, target);
 
     // 步骤2：状态机逻辑
     switch (avoid_state)
@@ -355,7 +355,9 @@ Eigen::Vector2f coneAvoidanceByTangent(
         {
             // 初始化弧形飞行参数
             avoid_state = AvoidanceState::ARC_FLIGHT;
+            // ROS_INFO("问题出在下一步");
             arc_center = active_obs[0].position; // 近障碍为弧形中心
+            // ROS_INFO("问题出在上一步");
             arc_radius = (opt_tangent - arc_center).norm();
             tangent_arrive_time = ros::Time::now();
             ROS_INFO("到达切点，进入弧形避障（中心：(%.2f, %.2f)，半径：%.2f）",
@@ -365,7 +367,7 @@ Eigen::Vector2f coneAvoidanceByTangent(
         // 未到达，继续飞向切点
         Eigen::Vector2f dir = opt_tangent - UAV_pos;
         dir.normalize();
-        return UAV_pos + dir * MIN_HOVER_SPEED * 0.05f;
+        return UAV_pos + dir * MAX_SPEED * 0.5f;
     }
 
     // 状态4：弧形避障（圆锥轨迹）
