@@ -174,7 +174,9 @@ enum class AvoidanceState {
     FLY_TO_TANGENT, // 飞向最优/融合切点
     ARC_FLIGHT,     // 沿弧形轨迹避障
     RETURN_TO_GOAL  // 脱离碰撞锥，回归目标
-}; 
+};
+
+// 声明静态变量
 static AvoidanceState avoid_state = AvoidanceState::IDLE;
 
 // 避障静态变量（仅初始化一次）
@@ -191,7 +193,6 @@ std::tuple<float, float> calculateCollisionCone(
     const Eigen::Vector2f &UAV_pos,
     const Eigen::Vector2f &UAV_dir,
     const ObsRound &obs,
-    const ObsRound &obs,
     float UAV_radius)
 {
     Eigen::Vector2f r = obs.position - UAV_pos;
@@ -203,8 +204,6 @@ std::tuple<float, float> calculateCollisionCone(
 
     // 碰撞锥开度角：基于安全半径计算
     float cone_opening_angle = asin(std::min(1.0f, obs.safe_radius / r_norm));
-    // 碰撞锥开度角：基于安全半径计算
-    float cone_opening_angle = asin(std::min(1.0f, obs.safe_radius / r_norm));
     float dir_angle = acos(std::max(-1.0f, std::min(1.0f, UAV_dir.dot(r.normalized()))));
 
     return {cone_opening_angle, dir_angle};
@@ -212,69 +211,12 @@ std::tuple<float, float> calculateCollisionCone(
 
 /**
  * @brief 选择最优/融合切点（适配ObsRound，解决多障碍物冲突）
- * @brief 选择最优/融合切点（适配ObsRound，解决多障碍物冲突）
  */
-Eigen::Vector2f selectOptimalTangent(
-    const std::vector<ObsRound> &obs_rounds,
 Eigen::Vector2f selectOptimalTangent(
     const std::vector<ObsRound> &obs_rounds,
     const Eigen::Vector2f &UAV_pos,
     const Eigen::Vector2f &target)
-    const Eigen::Vector2f &target)
 {
-    // 无障碍物：返回目标点
-    if (obs_rounds.empty())
-        return target;
-
-    // 单障碍物：选到目标更近的切点
-    if (obs_rounds.size() == 1)
-    {
-        float dist_left = (obs_rounds[0].left_point - target).norm();
-        float dist_right = (obs_rounds[0].right_point - target).norm();
-        return dist_left < dist_right ? obs_rounds[0].left_point : obs_rounds[0].right_point;
-    }
-
-    // 多障碍物：融合切点（距离加权平均，解决冲突）
-    Eigen::Vector2f fuse_tangent = Eigen::Vector2f::Zero();
-    float total_weight = 0.0f;
-    for (const auto &obs : obs_rounds)
-    {
-        // 每个障碍物选最优切点
-        float dist_left = (obs.left_point - target).norm();
-        float dist_right = (obs.right_point - target).norm();
-        Eigen::Vector2f obs_opt = dist_left < dist_right ? obs.left_point : obs.right_point;
-
-        // 权重=1/无人机到障碍物的距离（近障碍权重高）
-        float dist_uav_obs = (obs.position - UAV_pos).norm();
-        float weight = dist_uav_obs < 1e-3 ? 1.0f : (1.0f / dist_uav_obs);
-
-        fuse_tangent += obs_opt * weight;
-        total_weight += weight;
-    }
-    return total_weight < 1e-3 ? target : (fuse_tangent / total_weight);
-}
-
-/**
- * @brief 筛选激活障碍物（碰撞锥重叠的障碍物）
- */
-std::vector<ObsRound> getActiveObs(
-    const std::vector<ObsRound> &obs_rounds,
-    const Eigen::Vector2f &UAV_pos,
-    const Eigen::Vector2f &target)
-{
-    std::vector<ObsRound> active_obs;
-    Eigen::Vector2f UAV_dir = target - UAV_pos;
-    if (UAV_dir.norm() < 1e-3)
-        return active_obs;
-    UAV_dir.normalize();
-
-    for (const auto &obs : obs_rounds)
-    {
-        auto [cone_opening, dir_angle] = calculateCollisionCone(UAV_pos, UAV_dir, obs, UAV_radius);
-        // 碰撞锥重叠（方向角≤开度角+5°安全裕度）→ 激活
-        if (dir_angle <= cone_opening + 0.087f)
-        { // 0.087rad=5°
-            active_obs.push_back(obs);
     // 无障碍物：返回目标点
     if (obs_rounds.empty())
         return target;
@@ -338,40 +280,18 @@ std::vector<ObsRound> getActiveObs(
                   return (a.position - UAV_pos).norm() < (b.position - UAV_pos).norm();
               });
     return active_obs;
-    // 按距离排序（近→远），解决多障碍物优先级
-    std::sort(active_obs.begin(), active_obs.end(),
-              [&UAV_pos](const ObsRound &a, const ObsRound &b)
-              {
-                  return (a.position - UAV_pos).norm() < (b.position - UAV_pos).norm();
-              });
-    return active_obs;
 }
 
 /**
  * @brief 基于切点的圆锥避障位置计算（核心逻辑）
- * @brief 基于切点的圆锥避障位置计算（核心逻辑）
  */
-Eigen::Vector2f coneAvoidanceByTangent(
 Eigen::Vector2f coneAvoidanceByTangent(
     const Eigen::Vector2f &target,
     const Eigen::Vector2f &UAV_pos,
     const Eigen::Vector2f &UAV_vel)
 {
     // 常量定义（复用原有参数）
-    const float MAX_SPEED = 2.0f;
-    const float MIN_HOVER_SPEED = 0.1f;
-    const float err_max = 0.2f;      // 复用原有误差阈值
-    const float ROTATE_SPEED = 0.1f; // 弧形旋转角速度（rad/s）
-
-    // 步骤1：筛选激活障碍物
-    std::vector<ObsRound> active_obs = getActiveObs(obs_rounds, UAV_pos, target);
-
-    // 步骤2：状态机逻辑
-    switch (avoid_state)
-    const Eigen::Vector2f &UAV_vel)
-{
-    // 常量定义（复用原有参数）
-    const float MAX_SPEED = 2.0f;
+    const float MAX_SPEED = 5.0f;
     const float MIN_HOVER_SPEED = 0.1f;
     const float err_max = 0.2f;      // 复用原有误差阈值
     const float ROTATE_SPEED = 0.1f; // 弧形旋转角速度（rad/s）
@@ -503,31 +423,23 @@ bool cone_avoidance_movement(float target_x, float target_y, float target_z,
     // ================= 1. 初始化（首次调用） =================
     static bool is_init = false;
     static ros::Time start_time;
-    static bool is_init = false;
-    static ros::Time start_time;
     if (!is_init)
     {
         start_time = ros::Time::now();
-        start_time = ros::Time::now();
         is_init = true;
-        avoid_state = AvoidanceState::IDLE; // 重置避障状态机
         avoid_state = AvoidanceState::IDLE; // 重置避障状态机
         ROS_INFO("圆锥避障任务启动，超时阈值：%.1f秒", time_final);
     }
 
     // ================= 2. 终止条件判断（保留原有逻辑） =================
-    // ================= 2. 终止条件判断（保留原有逻辑） =================
     ros::Duration elapsed_time = ros::Time::now() - start_time;
-    // 2.1 超时终止
     // 2.1 超时终止
     if (elapsed_time.toSec() >= time_final)
     {
         ROS_WARN("圆锥避障任务超时（已耗时%.1f秒），准备降落！", elapsed_time.toSec());
         is_init = false;
-        is_init = false;
         return true;
     }
-    // 2.2 到达目标点终止
     // 2.2 到达目标点终止
     float abs_target_x = target_x + init_position_x_take_off;
     float abs_target_y = target_y + init_position_y_take_off;
@@ -536,11 +448,8 @@ bool cone_avoidance_movement(float target_x, float target_y, float target_z,
     float dist_xy = hypotf(dist_x, dist_y);
     float dist_z = fabs(local_pos.pose.pose.position.z - (target_z + init_position_z_take_off));
     if (dist_xy < err_max && dist_z < err_max)
-    float dist_z = fabs(local_pos.pose.pose.position.z - (target_z + init_position_z_take_off));
-    if (dist_xy < err_max && dist_z < err_max)
     {
         ROS_INFO("到达目标点（距离误差：%.3f米），准备降落！", dist_xy);
-        is_init = false;
         is_init = false;
         return true;
     }
@@ -563,19 +472,11 @@ bool cone_avoidance_movement(float target_x, float target_y, float target_z,
 
     // ================= 5. 调用圆锥避障位置计算函数 =================
     Eigen::Vector2f next_pos = coneAvoidanceByTangent(target, UAV_pos, UAV_vel);
-    // ================= 5. 调用圆锥避障位置计算函数 =================
-    Eigen::Vector2f next_pos = coneAvoidanceByTangent(target, UAV_pos, UAV_vel);
 
     // ================= 6. 设置位置控制指令（替换原有速度控制） =================
     // type_mask：启用位置控制，关闭速度/加速度/yaw_rate等冗余控制
     setpoint_raw.type_mask = 8 + 16 + 32 + 64 + 128 + 256 + 1024 + 2048;
-    // ================= 6. 设置位置控制指令（替换原有速度控制） =================
-    // type_mask：启用位置控制，关闭速度/加速度/yaw_rate等冗余控制
-    setpoint_raw.type_mask = 8 + 16 + 32 + 64 + 128 + 256 + 1024 + 2048;
     setpoint_raw.coordinate_frame = 1;                             // 局部NED坐标系
-    setpoint_raw.position.x = next_pos.x();                        // 避障计算的下一个位置X
-    setpoint_raw.position.y = next_pos.y();                        // 避障计算的下一个位置Y
-    setpoint_raw.position.z = target_z + init_position_z_take_off; // 固定Z高度
     setpoint_raw.position.x = next_pos.x();                        // 避障计算的下一个位置X
     setpoint_raw.position.y = next_pos.y();                        // 避障计算的下一个位置Y
     setpoint_raw.position.z = target_z + init_position_z_take_off; // 固定Z高度
@@ -601,38 +502,14 @@ bool cone_avoidance_movement(float target_x, float target_y, float target_z,
         state_str = "回归目标";
         break;
     }
-    // ================= 7. 日志输出（增强避障状态） =================
-    std::string state_str;
-    switch (avoid_state)
-    {
-    case AvoidanceState::IDLE:
-        state_str = "正常飞行";
-        break;
-    case AvoidanceState::DECELERATE:
-        state_str = "减速";
-        break;
-    case AvoidanceState::FLY_TO_TANGENT:
-        state_str = "飞向切点";
-        break;
-    case AvoidanceState::ARC_FLIGHT:
-        state_str = "弧形避障";
-        break;
-    case AvoidanceState::RETURN_TO_GOAL:
-        state_str = "回归目标";
-        break;
-    }
     ROS_INFO(
-        "状态：%s | 当前位置：(%.2f, %.2f) | 目标点：(%.2f, %.2f) | 下一位置：(%.2f, %.2f) | 剩余时间：%.1f秒",
-        state_str.c_str(),
         "状态：%s | 当前位置：(%.2f, %.2f) | 目标点：(%.2f, %.2f) | 下一位置：(%.2f, %.2f) | 剩余时间：%.1f秒",
         state_str.c_str(),
         UAV_pos.x(), UAV_pos.y(),
         target.x(), target.y(),
         next_pos.x(), next_pos.y(),
-        next_pos.x(), next_pos.y(),
         time_final - elapsed_time.toSec());
 
-    // ================= 8. 未满足终止条件，继续执行 =================
     // ================= 8. 未满足终止条件，继续执行 =================
     return false;
 }
