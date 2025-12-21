@@ -46,7 +46,7 @@ const int min_neighbors{3};
 int max_cluster_size{150};     //最大簇大小，
 float min_obstacle_radius_{0.1f};  // 最小障碍物半径
 float max_obstacle_radius_{3.f};  // 最大障碍物半径
-float drone_radius=0.3f;
+float drone_radius{0.f};
 
 class detect_obs{
 
@@ -103,35 +103,7 @@ public:
         
         processObstaclesWithMemory(clusters,drone_pos,target_pos);
 
-        static int log_count = 0;
-        if (if_debug == 1 && ++log_count % 10 == 0) {
-            ROS_INFO("Drone: (%.2f, %.2f), Target: (%.2f, %.2f)", 
-                    local_pos.pose.pose.position.x, local_pos.pose.pose.position.y,
-                    target_x, target_y);
-            ROS_INFO("总共%d，接收：%lu，体素：%lu，密集：%lu，簇数量：%lu", msg->point_num, cloud_world->size(),cloud_voxel->size(),cloud_dense->size(),clusters.size());
-            ROS_INFO("=== 障碍物列表 (共 %zu 个) ===", clusters.size());
-            for (size_t i = 0; i < clusters.size(); ++i) {
-                float cx = 0, cy = 0;
-                for (const auto& pt : clusters[i]->points) {
-                    cx += pt.x;
-                    cy += pt.y;
-                }
-                cx /= clusters[i]->size();
-                cy /= clusters[i]->size();
-                ROS_INFO("  簇 %zu: 中心(%.2f, %.2f), 点数=%zu",
-                        i, cx, cy, clusters[i]->size());
-            }
-            ROS_INFO("=== 最终障碍物列表 (共 %zu 个) ===", obstacles.size());
-            for (size_t i = 0; i < obstacles.size(); ++i) {
-                const auto& obs = obstacles[i];
-                ROS_INFO("  障碍物 %d: 位置(%.2f, %.2f), 半径=%.2fm",
-                        obs.id,
-                        obs.position.x(),
-                        obs.position.y(),
-                        obs.radius);
-                log_count = 0;
-            }
-        }
+        logTheInfo(msg);
     }
         
 private:
@@ -400,7 +372,7 @@ private:
         for (const auto& pt : cluster->points) {
             float dx = pt.x - center.x();
             float dy = pt.y - center.y();
-            radius = std::max(radius, std::sqrt(dx*dx + dy*dy))+drone_radius;
+            radius = std::max(radius, std::sqrt(dx*dx + dy*dy)+drone_radius);
         }
     }
 
@@ -511,7 +483,8 @@ private:
                 // 半径过滤（避免过小/过大）
                 if (obstacle_radius >= min_obstacle_radius_ && obstacle_radius <= max_obstacle_radius_
                     && obstacle_center[0]<=drone_position[0]+3.5f && obstacle_center[0]>=drone_position[0]-1.5f
-                    && std::abs(obstacle_center[1]-drone_position[1])<=2.5f) {
+                    && std::abs(obstacle_center[1]-drone_position[1])<=2.5f
+                    ) {
                     new_detections.push_back({-1, obstacle_center, obstacle_radius, 0});
                 }
             }
@@ -527,6 +500,13 @@ private:
             int best_match_idx = -1;
             float min_distance = std::numeric_limits<float>::max();
             
+            // 检查historical_obstacle_matched是否与historical_obstacles大小一致
+            if (historical_obstacle_matched.size() != historical_obstacles.size()) {
+                ROS_ERROR("Size mismatch! historical_obstacle_matched: %zu, historical_obstacles: %zu", 
+                        historical_obstacle_matched.size(), historical_obstacles.size());
+                historical_obstacle_matched.resize(historical_obstacles.size(), false);
+            }
+
             for (size_t j = 0; j < historical_obstacles.size(); ++j) {
                 float distance = (historical_obstacles[j].position - new_center).norm();
                 if (distance < min_distance && distance <= matching_distance_threshold) {
@@ -537,15 +517,20 @@ private:
             
             // 如果找到匹配的历史障碍物
             if (best_match_idx != -1) {
-                // 微调位置：使用加权平均，给新检测更高的权重
-                float alpha = 0.7f; // 新检测的权重
-                historical_obstacles[best_match_idx].position = 
-                    alpha * new_center + (1.0f - alpha) * historical_obstacles[best_match_idx].position;
-                historical_obstacles[best_match_idx].radius = 
-                    alpha * new_radius + (1.0f - alpha) * historical_obstacles[best_match_idx].radius;
-                historical_obstacles[best_match_idx].missed_count = 0; // 重置未检测计数
-                historical_obstacle_matched[best_match_idx] = true;
-                matched_new = true;
+                // 确保索引有效
+                if (best_match_idx >= 0 && best_match_idx < historical_obstacle_matched.size() &&
+                    best_match_idx < historical_obstacles.size()) {
+                    float alpha = 0.7f;
+                    historical_obstacles[best_match_idx].position = 
+                        alpha * new_center + (1.0f - alpha) * historical_obstacles[best_match_idx].position;
+                    historical_obstacles[best_match_idx].radius = 
+                        alpha * new_radius + (1.0f - alpha) * historical_obstacles[best_match_idx].radius;
+                    historical_obstacles[best_match_idx].missed_count = 0;
+                    historical_obstacle_matched[best_match_idx] = true;
+                    matched_new = true;
+                } else {
+                    ROS_ERROR("Invalid best_match_idx: %d", best_match_idx);
+                }
             }
             
             // 如果没有匹配到历史障碍物，创建新的
@@ -557,16 +542,24 @@ private:
                     0  // missed_count
                 });
                 // 新的障碍物也需要标记为已匹配
-                // historical_obstacle_matched.push_back(true);
+                historical_obstacle_matched.push_back(true);
             }
         }
 
         // 3. 更新未匹配的历史障碍物的missed_count
         for (size_t j = 0; j < historical_obstacles.size(); ++j) {
-            if (!historical_obstacle_matched[j]) {
-                historical_obstacles[j].missed_count++;
+            // 关键：检查索引是否有效
+            if (j < historical_obstacle_matched.size()) {
+                if (!historical_obstacle_matched[j]) {
+                    historical_obstacles[j].missed_count++;
+                }
+            } else {
+                // 如果标记数组大小不匹配，重新调整
+                ROS_WARN("historical_obstacle_matched size mismatch, adjusting");
+                historical_obstacle_matched.resize(historical_obstacles.size(), false);
             }
         }
+
 
         // 4. 删除连续未检测到超过阈值的障碍物
         auto it = historical_obstacles.begin();
@@ -585,6 +578,37 @@ private:
         }
     }
 
+    void logTheInfo(const livox_ros_driver::CustomMsg::ConstPtr& msg){
+        static int log_count = 0;
+        if (if_debug == 1 && ++log_count % 10 == 0) {
+            ROS_INFO("Drone: (%.2f, %.2f), Target: (%.2f, %.2f)", 
+                    local_pos.pose.pose.position.x, local_pos.pose.pose.position.y,
+                    target_x, target_y);
+            ROS_INFO("总共%d，接收：%lu，体素：%lu，密集：%lu，簇数量：%lu", msg->point_num, cloud_world->size(),cloud_voxel->size(),cloud_dense->size(),clusters.size());
+            ROS_INFO("=== 障碍物列表 (共 %zu 个) ===", clusters.size());
+            for (size_t i = 0; i < clusters.size(); ++i) {
+                float cx = 0, cy = 0;
+                for (const auto& pt : clusters[i]->points) {
+                    cx += pt.x;
+                    cy += pt.y;
+                }
+                cx /= clusters[i]->size();
+                cy /= clusters[i]->size();
+                ROS_INFO("  簇 %zu: 中心(%.2f, %.2f), 点数=%zu",
+                        i, cx, cy, clusters[i]->size());
+            }
+            ROS_INFO("=== 最终障碍物列表 (共 %zu 个) ===", obstacles.size());
+            for (size_t i = 0; i < obstacles.size(); ++i) {
+                const auto& obs = obstacles[i];
+                ROS_INFO("  障碍物 %d: 位置(%.2f, %.2f), 半径=%.2fm",
+                        obs.id,
+                        obs.position.x(),
+                        obs.position.y(),
+                        obs.radius);
+                log_count = 0;
+            }
+        }
+    }
 };
 
 std::vector<Obstacle> detect_obs::historical_obstacles;
