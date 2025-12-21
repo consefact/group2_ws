@@ -35,6 +35,11 @@ void transObs(const std::vector<Obstacle>& obss){
             obs_round.right_point=rot*(-radius_vec)+obs.position;
             rot=Eigen::Rotation2D<float>(-M_PI/2+angle);
             obs_round.left_point=rot*(-radius_vec)+obs.position;
+            Eigen::Vector2f dist_side_left=obs_round.left_point-current_pos;
+            Eigen::Vector2f dist_side_right=obs_round.right_point-current_pos;
+            float dist_side=dist_side_left.norm();
+            obs_round.left_point=current_pos+dist_side_left/dist_side*(dist_side+obs_round.safe_radius/2);
+            obs_round.right_point=current_pos+dist_side_right/dist_side*(dist_side+obs_round.safe_radius/2);
         }
         obs_rounds.push_back(obs_round);
     }
