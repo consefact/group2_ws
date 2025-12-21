@@ -176,8 +176,37 @@ int main(int argc, char **argv)
   setpoint_raw.position.z = ALTITUDE;
   setpoint_raw.yaw = 0;
       }
+
+      // 世界系前进
+      case 2:
+      {
+        // 调用圆锥避障函数（每帧执行）
+        bool is_finish = cone_avoidance_movement(target_x, target_y, target_z,
+                                                 target_yaw, UAV_radius,
+                                                 time_final, err_max);
+        if (is_finish)
+        {
+          printf("圆锥避障任务完成，准备降落！\n");
+          mission_num = 3; // 完成避障，切换到降落任务
+          break;
+        }
+        break;
+      }
+      case 3:
+      {
+        // 调用降落函数
+        bool is_landed = precision_land();
+        if (is_landed)
+        {
+          printf("降落任务完成，退出程序！\n");
+          mission_num = -1; // 任务完成，退出程序
+          break;
+        }
+        break;
+      }
       default:
         break;
+
 
 
     
