@@ -390,7 +390,7 @@ Eigen::Vector2f coneAvoidanceByTangent(
         // 未到达，继续飞向切点
         Eigen::Vector2f dir = opt_tangent - UAV_pos;
         dir.normalize();
-        return UAV_pos + dir * MAX_SPEED * 0.5f;
+        return UAV_pos + dir * MAX_SPEED * 0.05f;
     }
 
     // 状态5：回归目标（线性加速，保留原有逻辑）
