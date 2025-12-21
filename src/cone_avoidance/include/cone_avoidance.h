@@ -464,6 +464,7 @@ bool cone_avoidance_movement(float target_x, float target_y, float target_z,
 
     // ================= 6. 设置位置控制指令（替换原有速度控制） =================
     // type_mask：启用位置控制，关闭速度/加速度/yaw_rate等冗余控制
+    
     setpoint_raw.type_mask = 8 + 16 + 32 + 64 + 128 + 256 + 1024 + 2048;
     setpoint_raw.coordinate_frame = 1;                             // 局部NED坐标系
     setpoint_raw.position.x = next_pos.x();                        // 避障计算的下一个位置X
