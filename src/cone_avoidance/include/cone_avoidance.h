@@ -225,7 +225,7 @@ Eigen::Vector2f selectOptimalTangent(
         float dist_right = (obs_rounds[0].right_point - target).norm();
         // 原逻辑：dist_left < dist_right → 选左；现在：dist_left > dist_right → 选左（远的）
         std::cout<<"单障碍物避障，选择切点距离目标距离：左切点="<<dist_left<<",右切点="<<dist_right<<std::endl;
-        return dist_left > dist_right ? obs_rounds[0].left_point : obs_rounds[0].right_point;
+        return dist_left < dist_right ? obs_rounds[0].left_point : obs_rounds[0].right_point;
     }
 
     // 多障碍物：融合切点（每个障碍先选远切点，再加权融合）
@@ -236,7 +236,7 @@ Eigen::Vector2f selectOptimalTangent(
         // 核心修改：每个障碍选到目标更远的切点
         float dist_left = (obs.left_point - target).norm();
         float dist_right = (obs.right_point - target).norm();
-        Eigen::Vector2f obs_opt = dist_left > dist_right ? obs.left_point : obs.right_point;
+        Eigen::Vector2f obs_opt = dist_left < dist_right ? obs.left_point : obs.right_point;
 
         // 权重逻辑保留（近障碍权重高）
         float dist_uav_obs = (obs.position - UAV_pos).norm();
