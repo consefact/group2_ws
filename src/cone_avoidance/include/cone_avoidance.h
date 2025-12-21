@@ -224,6 +224,7 @@ Eigen::Vector2f selectOptimalTangent(
         float dist_left = (obs_rounds[0].left_point - target).norm();
         float dist_right = (obs_rounds[0].right_point - target).norm();
         // 原逻辑：dist_left < dist_right → 选左；现在：dist_left > dist_right → 选左（远的）
+        std::cout::cout<<"单障碍物避障，选择切点距离目标距离：左切点="<<dist_left<<",右切点="<<dist_right<<std::endl;
         return dist_left > dist_right ? obs_rounds[0].left_point : obs_rounds[0].right_point;
     }
 
