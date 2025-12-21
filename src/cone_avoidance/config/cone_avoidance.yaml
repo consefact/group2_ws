@@ -7,7 +7,7 @@ target_x : 10.0
 target_y : 0.0  
 
 target_yaw : 0.0
-UAV_radius : 0.3
+UAV_radius : 0.6
 time_final : 70.0
 ALPHA : 2.3
 MAX_SPEED : 0.5
