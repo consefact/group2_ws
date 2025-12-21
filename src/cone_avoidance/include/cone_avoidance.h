@@ -206,9 +206,8 @@ std::tuple<float, float> calculateCollisionCone(
 
     return {cone_opening_angle, dir_angle};
 }
-
 /**
- * @brief 选择最优/融合切点（完全保留原有逻辑）
+ * @brief 选择最优/融合切点（核心修改：选到目标更远的切点）
  */
 Eigen::Vector2f selectOptimalTangent(
     const std::vector<ObsRound> &obs_rounds,
@@ -219,25 +218,26 @@ Eigen::Vector2f selectOptimalTangent(
     if (obs_rounds.empty())
         return target;
 
-    // 单障碍物：选到目标更近的切点
+    // 单障碍物：选到目标更远的切点（核心修改：dist_left > dist_right）
     if (obs_rounds.size() == 1)
     {
         float dist_left = (obs_rounds[0].left_point - target).norm();
         float dist_right = (obs_rounds[0].right_point - target).norm();
-        return dist_left < dist_right ? obs_rounds[0].left_point : obs_rounds[0].right_point;
+        // 原逻辑：dist_left < dist_right → 选左；现在：dist_left > dist_right → 选左（远的）
+        return dist_left > dist_right ? obs_rounds[0].left_point : obs_rounds[0].right_point;
     }
 
-    // 多障碍物：融合切点（距离加权平均，解决冲突）
+    // 多障碍物：融合切点（每个障碍先选远切点，再加权融合）
     Eigen::Vector2f fuse_tangent = Eigen::Vector2f::Zero();
     float total_weight = 0.0f;
     for (const auto &obs : obs_rounds)
     {
-        // 每个障碍物选最优切点
+        // 核心修改：每个障碍选到目标更远的切点
         float dist_left = (obs.left_point - target).norm();
         float dist_right = (obs.right_point - target).norm();
-        Eigen::Vector2f obs_opt = dist_left < dist_right ? obs.left_point : obs.right_point;
+        Eigen::Vector2f obs_opt = dist_left > dist_right ? obs.left_point : obs.right_point;
 
-        // 权重=1/无人机到障碍物的距离（近障碍权重高）
+        // 权重逻辑保留（近障碍权重高）
         float dist_uav_obs = (obs.position - UAV_pos).norm();
         float weight = dist_uav_obs < 1e-3 ? 1.0f : (1.0f / dist_uav_obs);
 
@@ -246,7 +246,6 @@ Eigen::Vector2f selectOptimalTangent(
     }
     return total_weight < 1e-3 ? target : (fuse_tangent / total_weight);
 }
-
 /**
  * @brief 筛选激活障碍物（碰撞锥重叠的障碍物）
  */
