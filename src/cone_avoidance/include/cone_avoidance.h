@@ -244,6 +244,8 @@ Eigen::Vector2f selectOptimalTangent(
 
         fuse_tangent += obs_opt * weight;
         total_weight += weight;
+        ROS_INFO("两个切点(%.2f, %.2f)(%.2f, %.2f) ",
+                 obs.left_point.x(), obs.left_point.y(), obs.right_point.x(), obs.right_point.y());
     }
     return total_weight < 1e-3 ? target : (fuse_tangent / total_weight);
 }
