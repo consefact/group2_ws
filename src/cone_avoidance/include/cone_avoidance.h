@@ -214,100 +214,76 @@ Eigen::Vector2f applyCBF(
     float UAV_radius)
 {
     /* ================= 1. 名义控制：指向目标 ================= */
-    Eigen::Vector2f u_dir = target - UAV_pos; // 指向目标的位移向量
-    if (u_dir.norm() > 1e-3)
-        u_dir.normalize();                 // 单位方向
-    Eigen::Vector2f u = MAX_SPEED * u_dir; // 名义速度 u_des
+    Eigen::Vector2f u_des = target - UAV_pos;
+    if (u_des.norm() > 1e-6f)
+        u_des.normalize();
+    Eigen::Vector2f u_ref = u_des * MAX_SPEED;
 
-    /* ================= 2. 激活障碍物筛选 ================= */
-    std::vector<Obstacle> active_obs;
-
+    /* ================= 2. 人工势场避障引导 ================= */
+    Eigen::Vector2f free_dir = Eigen::Vector2f::Zero();
     for (const auto &obs : obstacles)
     {
-        Eigen::Vector2f r_a = obs.position - UAV_pos; // UAV -> 障碍物
-        float R_sq = (UAV_radius + obs.radius) *
-                     (UAV_radius + obs.radius); // 安全半径平方
+        Eigen::Vector2f r = UAV_pos - obs.position;
+        float dist = r.norm();
+        float d_safe = UAV_radius + obs.radius;
 
-        // CBF 函数 h(x) = ||r||^2 - (2R)^2
-        // 提前放大安全区域，用于更早介入避障
-        float h = r_a.squaredNorm() - 4.0f * R_sq;
-
-        // h_dot = ∇h · x_dot = -2 r^T v
-        float h_dot = -2.0f * r_a.dot(UAV_vel);
-
-        // 距离过近 且 正在靠近 → 激活该障碍物
-        if (h < 0 && h_dot < OBS_EPS)
-            active_obs.push_back(obs);
+        // 在影响范围内才产生斥力
+        if (dist < d_safe + 5.0f) {
+            free_dir += r / (dist*dist + 1e-3f);
+        }
     }
-
-    /* ================= 3. 自由空间方向（避障启发） ================= */
-    Eigen::Vector2f free_dir = Eigen::Vector2f::Zero();
-    for (const auto &obs : active_obs)
-    {
-        Eigen::Vector2f r = obs.position - UAV_pos;
-        // 人工势场式排斥方向，指向远离障碍的自由空间
-        free_dir -= r / (r.squaredNorm() + 1e-3f);
-    }
-    if (free_dir.norm() > 1e-3)
+    if (free_dir.norm() > 1e-3f) {
         free_dir.normalize();
+        // 融合目标方向和避障方向
+        u_ref = W_goal * u_ref + W_free * free_dir * u_ref.norm();
+    }
 
-    /* ================= 4. 构造参考速度 ================= */
-    // 参考控制不是最终解，而是 CBF 约束投影的“目标点”
-    Eigen::Vector2f u_ref =
-        W_goal * u +                  // 目标跟踪项
-        W_free * free_dir * u.norm(); // 避障引导项
-
-    /* ================= 5. 修正权重（数值稳定） ================= */
-    // 障碍物越多、速度越大 → 修正越平缓
-    float w = 1.0f + KV * UAV_vel.norm() + KN * active_obs.size();
-
-    /* ================= 6. CBF 安全约束投影 ================= */
-    for (const auto &obs : active_obs)
+    /* ================= 3. CBF 分析 & 解析投影修正 ================= */
+    const float gamma = ALPHA;
+    for (const auto &obs : obstacles)
     {
-        Eigen::Vector2f r = obs.position - UAV_pos;
-        float dist_sq = r.dot(r);
-        float R_sq = (UAV_radius + obs.radius) * (UAV_radius + obs.radius);
+        Eigen::Vector2f r = UAV_pos - obs.position;
+        float dist_sq = r.squaredNorm();
+        float d_safe = UAV_radius + obs.radius;
+        float safe_sq = d_safe*d_safe;
 
-        // 安全裕度：避免数值问题
-        const float eps = 1e-6f;
-        if (dist_sq <= R_sq + eps) {
-            // 已经碰撞或非常接近，强制最大修正
-            Eigen::Vector2f grad_ds = 2.0f * r;
-            float correction = (ALPHA * (dist_sq - R_sq) - grad_ds.dot(u_ref)) / (grad_ds.dot(grad_ds) + eps);
-            u_ref -= correction * grad_ds; // 不加权重，全力避障
-            continue;
-        }
-
-        Eigen::Vector2f grad_ds = 2.0f * r;
-        float cbf = ALPHA * (dist_sq - R_sq);
-        float violation = cbf - grad_ds.dot(u_ref);
-
-        if (violation > 0.0f)
+        // 只处理影响距离内
+        if (dist_sq < (safe_sq + 10.0f*d_safe))
         {
-            // 距离越近，权重越大；使用归一化距离设计权重
+            // 控制障碍函数
+            float h = dist_sq - safe_sq;
+
+            // 阶段一：梯度方向
+            Eigen::Vector2f grad_h = 2.0f * r;
+
+            // 违背 CBF 不等式量:  ∇h·u + γ h
+            float vio = grad_h.dot(u_ref) + gamma * h;
+
+            // 如果违背，则修正
+            if (vio < 0.0f)
+            {
+                float denom = grad_h.squaredNorm() + 1e-6f;
+                Eigen::Vector2f corr = (vio / denom) * grad_h;
+                u_ref -= corr;
+            }
+
+            // 阶段二：如果非常接近安全边界，强制减小朝障碍速度
             float dist = std::sqrt(dist_sq);
-            float d_safe = std::sqrt(R_sq); // 最小安全距离
-
-            // 权重设计：当 dist 接近 d_safe 时，weight → 1；远大于时 → 趋近于 0
-            // 例如：weight = exp(-k * (dist - d_safe)) 或 sigmoid 形式
-            const float k_weight = 2.0f; // 调整灵敏度
-            float weight = std::exp(-k_weight * (dist - d_safe));
-
-            // 或者使用线性衰减（更简单）：
-            // float max_influence_dist = d_safe + 5.0f; // 5米外几乎不影响
-            // float weight = std::max(0.0f, (max_influence_dist - dist) / (max_influence_dist - d_safe));
-
-            float denom = grad_ds.dot(grad_ds) + eps;
-            float correction = violation / denom;
-
-            // 应用距离权重：只修正一部分，避免远障碍过度干扰
-            u_ref -= weight * correction * grad_ds;
+            if (dist < d_safe + 0.5f*d_safe)
+            {
+                // 投影剔除条朝障碍的速度分量
+                Eigen::Vector2f along = r.normalized();
+                float v_along = u_ref.dot(along);
+                if (v_along < 0.0f) {
+                    u_ref -= v_along * along;
+                }
+            }
         }
     }
 
-    /* ================= 7. 速度限幅 ================= */
+    /* ================= 4. 速度限幅 ================= */
     if (u_ref.norm() > MAX_SPEED)
-        return u_ref.normalized() * MAX_SPEED;
+        u_ref = u_ref.normalized() * MAX_SPEED;
 
     return u_ref;
 }
