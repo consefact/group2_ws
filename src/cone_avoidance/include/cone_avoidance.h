@@ -1,6 +1,7 @@
 #include <string>
 #include <vector>
 #include"new_detect_obs.h"
+#include "cul_obs_round.h"
 #include <ros/ros.h>
 #include <geometry_msgs/PoseStamped.h>
 #include <geometry_msgs/Point.h>
@@ -166,65 +167,32 @@ bool precision_land()
 函数 :计算速度
 *************************************************************************/
 
-/*
- * ===================== 参数定义 =====================
- */
+// 避障状态机枚举（静态，避免全局污染）
+enum class AvoidanceState {
+    IDLE,           // 无避障，直接飞向目标
+    DECELERATE,     // 碰撞锥激活，减速
+    FLY_TO_TANGENT, // 飞向最优/融合切点
+    ARC_FLIGHT,     // 沿弧形轨迹避障
+    RETURN_TO_GOAL  // 脱离碰撞锥，回归目标
+}; 
+static AvoidanceState avoid_state = AvoidanceState::IDLE;
 
-// CBF 参数
-float ALPHA = 2.0;
-float MAX_SPEED = 2.0;
-float OBS_EPS = 0.1;
-float KV = 0.2;
-float KN = 0.1;
-float W_goal = 0.8;
-float W_free = 0.2;
-
-// 新增：碰撞锥加权参数
-float COLLISION_CONE_WEIGHT_SCALE = 3.0f; // 碰撞锥权重缩放系数
-float MIN_HOVER_SPEED = 0.1f;             // 悬停时的最大速度阈值
-
-/**
- * @brief 基于 Control Barrier Function (CBF) 的一阶速度避障控制器
- *
- * 【函数功能】
- * 本函数为无人机（或移动机器人）生成一个“安全速度指令” u，
- * 在尽量跟随目标点方向运动的同时，保证与所有障碍物保持安全距离。
- *
- * 控制模型假设：
- *   位置动力学： p_dot = u
- *
- * 核心思想：
- * 1. 先生成一个指向目标的名义速度 u_des
- * 2. 识别对当前运动构成威胁的“激活障碍物”
- * 3. 构造一个参考速度 u_ref（目标驱动 + 避障启发）
- * 4. 对每个激活障碍物施加 CBF 线性安全约束
- * 5. 若违反约束，通过投影方式修正速度
- * 6. 输出满足速度上限的安全控制量
- *
- * @param target     目标点位置
- * @param UAV_pos    UAV 当前位姿
- * @param UAV_vel    UAV 当前速度（用于障碍物激活判断）
- * @param obstacles  圆形障碍物列表
- * @param UAV_radius UAV 自身等效半径
- *
- * @return Eigen::Vector2f  满足 CBF 安全约束的速度指令
- */
+// 避障静态变量（仅初始化一次）
+static Eigen::Vector2f opt_tangent;     // 最优/融合切点
+static Eigen::Vector2f arc_center;      // 弧形中心（障碍物扩增圆圆心）
+static float arc_radius;                // 弧形半径（无人机到切点距离）
+static ros::Time decelerate_start_time; // 减速开始时间
+static ros::Time tangent_arrive_time;   // 到达切点开始计时
 
 /**
- * @brief 计算碰撞锥相关参数（辅助函数）
- * @param UAV_pos      无人机当前位置
- * @param UAV_dir      无人机朝向目标的单位方向
- * @param obs          单个障碍物
- * @param UAV_radius   无人机等效半径
- * @return std::tuple<float, float> 碰撞锥开度角(rad)、当前方向与锥中心线的夹角(rad)
+ * @brief 计算碰撞锥相关参数（适配ObsRound结构体）
  */
 std::tuple<float, float> calculateCollisionCone(
     const Eigen::Vector2f &UAV_pos,
     const Eigen::Vector2f &UAV_dir,
-    const Obstacle &obs,
+    const ObsRound &obs,
     float UAV_radius)
 {
-    // 无人机到障碍物的向量
     Eigen::Vector2f r = obs.position - UAV_pos;
     float r_norm = r.norm();
     if (r_norm < 1e-3)
@@ -232,270 +200,314 @@ std::tuple<float, float> calculateCollisionCone(
         return {M_PI, M_PI}; // 距离过近，默认最大锥角
     }
 
-    // 碰撞锥开度角 θ：满足 sinθ = (R_uav + R_obs) / ||r||
-    float cone_opening_angle = asin(std::min(1.0f, (UAV_radius + obs.radius) / r_norm));
-    // 无人机朝向与障碍物方向的夹角 φ
+    // 碰撞锥开度角：基于安全半径计算
+    float cone_opening_angle = asin(std::min(1.0f, obs.safe_radius / r_norm));
     float dir_angle = acos(std::max(-1.0f, std::min(1.0f, UAV_dir.dot(r.normalized()))));
 
     return {cone_opening_angle, dir_angle};
 }
 
 /**
- * @brief 检测CBF约束是否有可行解（拉格朗日数乘法无解判断）
- * @param u_ref        参考速度
- * @param active_obs   激活障碍物列表
- * @param UAV_pos      无人机位置
- * @param UAV_radius   无人机半径
- * @return bool        true=有解，false=无解（需悬停）
+ * @brief 选择最优/融合切点（适配ObsRound，解决多障碍物冲突）
  */
-bool checkCBFConstraintFeasible(
-    const Eigen::Vector2f &u_ref,
-    const std::vector<Obstacle> &active_obs,
+Eigen::Vector2f selectOptimalTangent(
+    const std::vector<ObsRound> &obs_rounds,
     const Eigen::Vector2f &UAV_pos,
-    float UAV_radius)
+    const Eigen::Vector2f &target)
 {
-    // 构建CBF线性约束：∇h·u ≤ α*h → a·u ≤ b
-    // 统计冲突的约束数量，若多数约束冲突则判定无解
-    int conflict_count = 0;
-    const float eps = 1e-6f;
+    // 无障碍物：返回目标点
+    if (obs_rounds.empty())
+        return target;
 
-    for (const auto &obs : active_obs)
+    // 单障碍物：选到目标更近的切点
+    if (obs_rounds.size() == 1)
     {
-        Eigen::Vector2f r = obs.position - UAV_pos;
-        float dist_sq = r.squaredNorm();
-        float R_sq = (UAV_radius + obs.radius) * (UAV_radius + obs.radius);
-        if (dist_sq <= R_sq + eps)
-        {
-            conflict_count++; // 已碰撞，直接判定冲突
-            continue;
-        }
-
-        Eigen::Vector2f grad_ds = 2.0f * r;
-        float cbf = ALPHA * (dist_sq - R_sq);
-        float violation = cbf - grad_ds.dot(u_ref);
-        if (violation > eps)
-        {
-            conflict_count++;
-        }
+        float dist_left = (obs_rounds[0].left_point - target).norm();
+        float dist_right = (obs_rounds[0].right_point - target).norm();
+        return dist_left < dist_right ? obs_rounds[0].left_point : obs_rounds[0].right_point;
     }
 
-    // 若超过50%的激活障碍物约束冲突，判定无解
-    return (active_obs.empty()) ? true : (conflict_count < active_obs.size() * 0.5f);
+    // 多障碍物：融合切点（距离加权平均，解决冲突）
+    Eigen::Vector2f fuse_tangent = Eigen::Vector2f::Zero();
+    float total_weight = 0.0f;
+    for (const auto &obs : obs_rounds)
+    {
+        // 每个障碍物选最优切点
+        float dist_left = (obs.left_point - target).norm();
+        float dist_right = (obs.right_point - target).norm();
+        Eigen::Vector2f obs_opt = dist_left < dist_right ? obs.left_point : obs.right_point;
+
+        // 权重=1/无人机到障碍物的距离（近障碍权重高）
+        float dist_uav_obs = (obs.position - UAV_pos).norm();
+        float weight = dist_uav_obs < 1e-3 ? 1.0f : (1.0f / dist_uav_obs);
+
+        fuse_tangent += obs_opt * weight;
+        total_weight += weight;
+    }
+    return total_weight < 1e-3 ? target : (fuse_tangent / total_weight);
 }
 
 /**
- * @brief 基于 Control Barrier Function (CBF) 的一阶速度避障控制器（优化版）
- * 优化点1：碰撞锥加权 - 距离越近/碰撞锥重叠度越高，速度修正权重越大
- * 优化点2：无解处理 - 拉格朗日约束无解时，无人机减速悬停
+ * @brief 筛选激活障碍物（碰撞锥重叠的障碍物）
  */
-Eigen::Vector2f applyCBF(
-    const Eigen::Vector2f &target,
+std::vector<ObsRound> getActiveObs(
+    const std::vector<ObsRound> &obs_rounds,
     const Eigen::Vector2f &UAV_pos,
-    const Eigen::Vector2f &UAV_vel,
-    const std::vector<Obstacle> &obstacles,
-    float UAV_radius)
+    const Eigen::Vector2f &target)
 {
-    /* ================= 1. 名义控制：指向目标 ================= */
-    Eigen::Vector2f u_dir = target - UAV_pos;
-    float u_dir_norm = u_dir.norm();
-    if (u_dir_norm > 1e-3)
-        u_dir.normalize();
-    Eigen::Vector2f u = MAX_SPEED * u_dir;
+    std::vector<ObsRound> active_obs;
+    Eigen::Vector2f UAV_dir = target - UAV_pos;
+    if (UAV_dir.norm() < 1e-3)
+        return active_obs;
+    UAV_dir.normalize();
 
-    /* ================= 2. 激活障碍物筛选 ================= */
-    std::vector<Obstacle> active_obs;
-    for (const auto &obs : obstacles)
+    for (const auto &obs : obs_rounds)
     {
-        Eigen::Vector2f r_a = obs.position - UAV_pos;
-        float R_sq = (UAV_radius + obs.radius) * (UAV_radius + obs.radius);
-        float h = r_a.squaredNorm() - 4.0f * R_sq; // 放大安全区域
-        float h_dot = -2.0f * r_a.dot(UAV_vel);
-
-        if (h < 0 && h_dot < OBS_EPS)
+        auto [cone_opening, dir_angle] = calculateCollisionCone(UAV_pos, UAV_dir, obs, UAV_radius);
+        // 碰撞锥重叠（方向角≤开度角+5°安全裕度）→ 激活
+        if (dir_angle <= cone_opening + 0.087f)
+        { // 0.087rad=5°
             active_obs.push_back(obs);
-    }
-
-    // 无激活障碍物，直接返回名义速度
-    if (active_obs.empty())
-    {
-        return (u.norm() > MAX_SPEED) ? u.normalized() * MAX_SPEED : u;
-    }
-
-    /* ================= 3. 自由空间方向（避障启发） ================= */
-    Eigen::Vector2f free_dir = Eigen::Vector2f::Zero();
-    for (const auto &obs : active_obs)
-    {
-        Eigen::Vector2f r = obs.position - UAV_pos;
-        free_dir -= r / (r.squaredNorm() + 1e-3f);
-    }
-    if (free_dir.norm() > 1e-3)
-        free_dir.normalize();
-
-    /* ================= 4. 构造参考速度 ================= */
-    Eigen::Vector2f u_ref = W_goal * u + W_free * free_dir * u.norm();
-
-    /* ================= 5. 预检测：CBF约束是否有解 ================= */
-    bool is_feasible = checkCBFConstraintFeasible(u_ref, active_obs, UAV_pos, UAV_radius);
-    if (!is_feasible)
-    {
-        ROS_WARN("CBF约束无解（被障碍物包围），无人机减速悬停！");
-        return Eigen::Vector2f::Zero(); // 悬停：速度归零（或MIN_HOVER_SPEED）
-    }
-
-    /* ================= 6. 修正权重（数值稳定） ================= */
-    float w = 1.0f + KV * UAV_vel.norm() + KN * active_obs.size();
-
-    /* ================= 7. CBF 安全约束投影（碰撞锥加权版） ================= */
-    for (const auto &obs : active_obs)
-    {
-        Eigen::Vector2f r = obs.position - UAV_pos;
-        float dist_sq = r.dot(r);
-        float R_sq = (UAV_radius + obs.radius) * (UAV_radius + obs.radius);
-        const float eps = 1e-6f;
-
-        // 1. 计算碰撞锥参数（距离+锥重叠度加权）
-        auto [cone_opening, dir_angle] = calculateCollisionCone(UAV_pos, u_dir, obs, UAV_radius);
-        // 距离权重：距离越近，权重越大（1/r² 归一化）
-        float dist_weight = std::min(1.0f, R_sq / (dist_sq + eps));
-        // 碰撞锥权重：重叠度越高（dir_angle < cone_opening），权重越大
-        float cone_weight = (dir_angle < cone_opening)
-                                ? exp(COLLISION_CONE_WEIGHT_SCALE * (1 - dir_angle / cone_opening))
-                                : 0.1f;
-        // 最终加权系数（距离+碰撞锥）
-        float total_weight = dist_weight * cone_weight;
-
-        // 2. 核心CBF约束修正
-        if (dist_sq <= R_sq + eps)
-        {
-            Eigen::Vector2f grad_ds = 2.0f * r;
-            float correction = (ALPHA * (dist_sq - R_sq) - grad_ds.dot(u_ref)) / (grad_ds.dot(grad_ds) + eps);
-            u_ref -= total_weight * correction * grad_ds; // 加权修正
-            continue;
-        }
-
-        Eigen::Vector2f grad_ds = 2.0f * r;
-        float cbf = ALPHA * (dist_sq - R_sq);
-        float violation = cbf - grad_ds.dot(u_ref);
-
-        if (violation > 0.0f)
-        {
-            float dist = std::sqrt(dist_sq);
-            float d_safe = std::sqrt(R_sq);
-
-            // 原有距离权重融合碰撞锥权重
-            float k_weight = 2.0f;
-            float distance_decay = std::exp(-k_weight * (dist - d_safe));
-            float weight = distance_decay * total_weight; // 最终权重
-
-            float denom = grad_ds.dot(grad_ds) + eps;
-            float correction = violation / denom;
-
-            u_ref -= weight * correction * grad_ds;
         }
     }
 
-    /* ================= 8. 速度限幅 + 悬停兜底 ================= */
-    // 若修正后速度仍过大，限幅；若速度过小，强制悬停
-    float ref_norm = u_ref.norm();
-    if (ref_norm < MIN_HOVER_SPEED)
-    {
-        ROS_INFO("无人机进入悬停状态（速度≤%.2fm/s）", MIN_HOVER_SPEED);
-        return Eigen::Vector2f::Zero(); // 完全悬停
-    }
-    else if (ref_norm > MAX_SPEED)
-    {
-        return u_ref.normalized() * MAX_SPEED;
-    }
-
-    return u_ref;
+    // 按距离排序（近→远），解决多障碍物优先级
+    std::sort(active_obs.begin(), active_obs.end(),
+              [&UAV_pos](const ObsRound &a, const ObsRound &b)
+              {
+                  return (a.position - UAV_pos).norm() < (b.position - UAV_pos).norm();
+              });
+    return active_obs;
 }
 
-/************************************************************************
-函数 5: 圆锥避障前进函数（case2调用，每帧执行）
-功能：集成CBF速度控制器，实现圆锥避障并向目标点移动
-参数：
-  - target_x/y: 目标点xy坐标（局部系，相对起飞点）
-  - target_z: 目标点z高度（绝对高度）
-  - target_yaw: 目标偏航角（弧度）
-  - UAV_radius: 无人机自身等效半径（米）
-  - time_final: 超时时间（秒）
-  - err_max: 到达目标点的距离误差阈值（米）
-返回值：
-  - true: 超时/到达目标点，触发任务切换
-  - false: 未完成，继续避障移动
-*************************************************************************/
+/**
+ * @brief 基于切点的圆锥避障位置计算（核心逻辑）
+ */
+Eigen::Vector2f coneAvoidanceByTangent(
+    const Eigen::Vector2f &target,
+    const Eigen::Vector2f &UAV_pos,
+    const Eigen::Vector2f &UAV_vel)
+{
+    // 常量定义（复用原有参数）
+    const float MAX_SPEED = 2.0f;
+    const float MIN_HOVER_SPEED = 0.1f;
+    const float err_max = 0.2f;      // 复用原有误差阈值
+    const float ROTATE_SPEED = 0.1f; // 弧形旋转角速度（rad/s）
+
+    // 步骤1：筛选激活障碍物
+    std::vector<ObsRound> active_obs = getActiveObs(obs_rounds, UAV_pos, target);
+
+    // 步骤2：状态机逻辑
+    switch (avoid_state)
+    {
+    // 状态1：无避障，直接飞向目标
+    case AvoidanceState::IDLE:
+    {
+        if (!active_obs.empty())
+        {
+            // 触发避障，进入减速状态
+            avoid_state = AvoidanceState::DECELERATE;
+            decelerate_start_time = ros::Time::now();
+            opt_tangent = selectOptimalTangent(active_obs, UAV_pos, target);
+            ROS_INFO("检测到激活障碍物(%zu个)，进入减速状态，最优切点：(%.2f, %.2f)",
+                     active_obs.size(), opt_tangent.x(), opt_tangent.y());
+            // 第一步先减速
+            Eigen::Vector2f dir = target - UAV_pos;
+            dir.normalize();
+            return UAV_pos + dir * MIN_HOVER_SPEED * 0.05f;
+        }
+        // 无避障，直接飞向目标
+        Eigen::Vector2f dir = target - UAV_pos;
+        if (dir.norm() > 1e-3)
+            dir.normalize();
+        return UAV_pos + dir * MAX_SPEED * 0.05f;
+    }
+
+    // 状态2：线性减速（2秒降至MIN_HOVER_SPEED）
+    case AvoidanceState::DECELERATE:
+    {
+        float decel_duration = (ros::Time::now() - decelerate_start_time).toSec();
+        float current_speed = std::max(MIN_HOVER_SPEED,
+                                       MAX_SPEED * (1 - decel_duration / 2.0f));
+        // 飞向最优切点
+        Eigen::Vector2f dir = opt_tangent - UAV_pos;
+        if (dir.norm() < 1e-3)
+            dir = Eigen::Vector2f::UnitX();
+        else
+            dir.normalize();
+
+        // 减速完成，进入飞向切点状态
+        if (current_speed <= MIN_HOVER_SPEED + 1e-3)
+        {
+            avoid_state = AvoidanceState::FLY_TO_TANGENT;
+            ROS_INFO("减速完成（当前速度：%.2f），飞向切点", current_speed);
+        }
+        return UAV_pos + dir * current_speed * 0.05f;
+    }
+
+    // 状态3：精准飞向切点
+    case AvoidanceState::FLY_TO_TANGENT:
+    {
+        // 到达切点判定（误差<err_max）
+        if ((opt_tangent - UAV_pos).norm() < err_max)
+        {
+            // 初始化弧形飞行参数
+            avoid_state = AvoidanceState::ARC_FLIGHT;
+            arc_center = active_obs[0].position; // 近障碍为弧形中心
+            arc_radius = (opt_tangent - arc_center).norm();
+            tangent_arrive_time = ros::Time::now();
+            ROS_INFO("到达切点，进入弧形避障（中心：(%.2f, %.2f)，半径：%.2f）",
+                     arc_center.x(), arc_center.y(), arc_radius);
+            return opt_tangent;
+        }
+        // 未到达，继续飞向切点
+        Eigen::Vector2f dir = opt_tangent - UAV_pos;
+        dir.normalize();
+        return UAV_pos + dir * MIN_HOVER_SPEED * 0.05f;
+    }
+
+    // 状态4：弧形避障（圆锥轨迹）
+    case AvoidanceState::ARC_FLIGHT:
+    {
+        // 计算弧形下一个点（绕障碍中心旋转）
+        float arc_duration = (ros::Time::now() - tangent_arrive_time).toSec();
+        float rotate_angle = ROTATE_SPEED * arc_duration; // 累计旋转角度
+
+        // 旋转矩阵：绕arc_center顺时针旋转（适配圆锥避障）
+        Eigen::Rotation2D<float> rot(-rotate_angle);
+        Eigen::Vector2f arc_point = arc_center + rot * (opt_tangent - arc_center);
+
+        // 检测是否脱离碰撞锥
+        Eigen::Vector2f UAV_dir = target - UAV_pos;
+        UAV_dir.normalize();
+        auto [cone_opening, dir_angle] = calculateCollisionCone(UAV_pos, UAV_dir, active_obs[0], UAV_radius);
+        if (dir_angle > cone_opening + 0.087f)
+        { // 脱离碰撞锥（+5°裕度）
+            avoid_state = AvoidanceState::RETURN_TO_GOAL;
+            ROS_INFO("脱离碰撞锥（夹角：%.1f°），回归目标", dir_angle * 180 / M_PI);
+            return arc_point;
+        }
+        return arc_point;
+    }
+
+    // 状态5：回归目标（线性加速）
+    case AvoidanceState::RETURN_TO_GOAL:
+    {
+        float return_duration = (ros::Time::now() - tangent_arrive_time).toSec();
+        // 2秒线性加速至MAX_SPEED
+        float current_speed = std::min(MAX_SPEED,
+                                       MIN_HOVER_SPEED + (MAX_SPEED - MIN_HOVER_SPEED) * return_duration / 2.0f);
+        // 飞向最终目标
+        Eigen::Vector2f dir = target - UAV_pos;
+        dir.normalize();
+
+        // 加速完成，回到IDLE状态
+        if (current_speed >= MAX_SPEED - 1e-3)
+        {
+            avoid_state = AvoidanceState::IDLE;
+            ROS_INFO("加速完成，回到正常飞行状态");
+        }
+        return UAV_pos + dir * current_speed * 0.05f;
+    }
+    }
+
+    // 兜底：返回当前位置
+    return UAV_pos;
+}
 bool cone_avoidance_movement(float target_x, float target_y, float target_z,
                              float target_yaw, float UAV_radius,
                              float time_final, float err_max)
 {
     // ================= 1. 初始化（首次调用） =================
-    static bool is_init = false; // 首次调用标记
-    static ros::Time start_time; // 计时器初始时间
+    static bool is_init = false;
+    static ros::Time start_time;
     if (!is_init)
     {
-        start_time = ros::Time::now(); // 首次调用初始化计时器
+        start_time = ros::Time::now();
         is_init = true;
+        avoid_state = AvoidanceState::IDLE; // 重置避障状态机
         ROS_INFO("圆锥避障任务启动，超时阈值：%.1f秒", time_final);
     }
 
-    // ================= 2. 终止条件判断 =================
-    // 2.1 计时到达阈值
+    // ================= 2. 终止条件判断（保留原有逻辑） =================
     ros::Duration elapsed_time = ros::Time::now() - start_time;
+    // 2.1 超时终止
     if (elapsed_time.toSec() >= time_final)
     {
         ROS_WARN("圆锥避障任务超时（已耗时%.1f秒），准备降落！", elapsed_time.toSec());
-        is_init = false; // 重置初始化标记
+        is_init = false;
         return true;
     }
-
-    // 2.2 到达目标点（距离误差满足要求）
+    // 2.2 到达目标点终止
     float abs_target_x = target_x + init_position_x_take_off;
     float abs_target_y = target_y + init_position_y_take_off;
     float dist_x = local_pos.pose.pose.position.x - abs_target_x;
     float dist_y = local_pos.pose.pose.position.y - abs_target_y;
     float dist_xy = hypotf(dist_x, dist_y);
-    if (dist_xy < err_max && fabs(local_pos.pose.pose.position.z - (target_z + init_position_z_take_off)) < err_max)
+    float dist_z = fabs(local_pos.pose.pose.position.z - (target_z + init_position_z_take_off));
+    if (dist_xy < err_max && dist_z < err_max)
     {
         ROS_INFO("到达目标点（距离误差：%.3f米），准备降落！", dist_xy);
-        is_init = false; // 重置初始化标记
+        is_init = false;
         return true;
     }
 
-    // ================= 3. 获取输入参数 =================
-    // 3.1 无人机当前位置（二维，Eigen格式）
-    Eigen::Vector2f UAV_pos = current_pos;
+    // ================= 3. 黑箱函数调用：转换障碍物为扩增圆+切点 =================
+    extern std::vector<Obstacle> obstacles; // 原有障碍物列表
+    transObs(obstacles);                    // 调用黑箱函数，生成obs_rounds（含切点/安全半径）
+    static int log_count = 0;
+    if (if_debug == 1 && ++log_count % 10 == 0) {
+        for(int i=0;i<obs_rounds.size();i++){
 
-    // 3.2 无人机当前速度（二维，Eigen格式，取最新值）
-    Eigen::Vector2f UAV_vel = current_vel;
+            ROS_INFO("障碍物%d:(%.2f,%.2f),r=%.2f,sr=%.2f,l(%.2f,%.2f),r(%.2f,%.2f)",i,obs_rounds[i].position.x(),obs_rounds[i].position.y(),obs_rounds[i].radius,obs_rounds[i].safe_radius,obs_rounds[i].left_point.x(),obs_rounds[i].left_point.y(),obs_rounds[i].right_point.x(),obs_rounds[i].right_point.y());
+        }
+    }    
 
-    // 3.3 目标点（二维，绝对坐标，Eigen格式）
-    Eigen::Vector2f target(abs_target_x, abs_target_y);
+    // ================= 4. 输入参数准备 =================
+    Eigen::Vector2f UAV_pos = current_pos;              // 无人机当前位置
+    Eigen::Vector2f UAV_vel = current_vel;              // 无人机当前速度
+    Eigen::Vector2f target(abs_target_x, abs_target_y); // 绝对目标点
 
-    // 3.4 障碍物列表（通过Livox回调获取点列，转换为Obstacle）
-    
+    // ================= 5. 调用圆锥避障位置计算函数 =================
+    Eigen::Vector2f next_pos = coneAvoidanceByTangent(target, UAV_pos, UAV_vel);
 
-    // 3.5 无人机自身半径（传入参数）
-
-    // ================= 4. 调用CBF速度计算函数 =================
-    Eigen::Vector2f safe_vel = applyCBF(target, UAV_pos, UAV_vel, obstacles, UAV_radius);
-
-    // ================= 5. 设置速度控制指令 =================
-    // type_mask：关闭位置控制(1+2)，启用速度控制，关闭其他冗余控制
-    setpoint_raw.type_mask = 1 + 2 + 32 + 64 + 128 + 256 + 512 + 1024 + 2048;
+    // ================= 6. 设置位置控制指令（替换原有速度控制） =================
+    // type_mask：启用位置控制，关闭速度/加速度/yaw_rate等冗余控制
+    setpoint_raw.type_mask = 8 + 16 + 32 + 64 + 128 + 256 + 1024 + 2048;
     setpoint_raw.coordinate_frame = 1;                             // 局部NED坐标系
-    setpoint_raw.velocity.x = safe_vel.x();                        // CBF输出x速度
-    setpoint_raw.velocity.y = safe_vel.y();                        // CBF输出y速度
-    setpoint_raw.position.z = target_z + init_position_z_take_off; // 固定z高度
+    setpoint_raw.position.x = next_pos.x();                        // 避障计算的下一个位置X
+    setpoint_raw.position.y = next_pos.y();                        // 避障计算的下一个位置Y
+    setpoint_raw.position.z = target_z + init_position_z_take_off; // 固定Z高度
     setpoint_raw.yaw = target_yaw;                                 // 固定偏航角
 
-    // ================= 6. 日志输出 =================
+    // ================= 7. 日志输出（增强避障状态） =================
+    std::string state_str;
+    switch (avoid_state)
+    {
+    case AvoidanceState::IDLE:
+        state_str = "正常飞行";
+        break;
+    case AvoidanceState::DECELERATE:
+        state_str = "减速";
+        break;
+    case AvoidanceState::FLY_TO_TANGENT:
+        state_str = "飞向切点";
+        break;
+    case AvoidanceState::ARC_FLIGHT:
+        state_str = "弧形避障";
+        break;
+    case AvoidanceState::RETURN_TO_GOAL:
+        state_str = "回归目标";
+        break;
+    }
     ROS_INFO(
-        "当前位置：(%.2f, %.2f) | 目标点：(%.2f, %.2f) | 控制速度：(%.2f, %.2f) | 剩余时间：%.1f秒",
+        "状态：%s | 当前位置：(%.2f, %.2f) | 目标点：(%.2f, %.2f) | 下一位置：(%.2f, %.2f) | 剩余时间：%.1f秒",
+        state_str.c_str(),
         UAV_pos.x(), UAV_pos.y(),
         target.x(), target.y(),
-        safe_vel.x(), safe_vel.y(),
+        next_pos.x(), next_pos.y(),
         time_final - elapsed_time.toSec());
 
-    // ================= 7. 未满足终止条件，继续执行 =================
+    // ================= 8. 未满足终止条件，继续执行 =================
     return false;
 }
