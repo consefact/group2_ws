@@ -1,6 +1,7 @@
 #include <string>
 #include <vector>
 #include"new_detect_obs.h"
+#include "cul_obs_round.h"
 #include <ros/ros.h>
 #include <geometry_msgs/PoseStamped.h>
 #include <geometry_msgs/Point.h>
@@ -167,13 +168,16 @@ bool precision_land()
 *************************************************************************/
 
 // 避障状态机枚举（静态，避免全局污染）
-static enum class AvoidanceState {
+enum class AvoidanceState {
     IDLE,           // 无避障，直接飞向目标
     DECELERATE,     // 碰撞锥激活，减速
     FLY_TO_TANGENT, // 飞向最优/融合切点
     ARC_FLIGHT,     // 沿弧形轨迹避障
     RETURN_TO_GOAL  // 脱离碰撞锥，回归目标
-} avoid_state = AvoidanceState::IDLE;
+};
+
+// 声明静态变量
+static AvoidanceState avoid_state = AvoidanceState::IDLE;
 
 // 避障静态变量（仅初始化一次）
 static Eigen::Vector2f opt_tangent;     // 最优/融合切点
@@ -293,7 +297,7 @@ Eigen::Vector2f coneAvoidanceByTangent(
     const float ROTATE_SPEED = 0.1f; // 弧形旋转角速度（rad/s）
 
     // 步骤1：筛选激活障碍物
-    std::vector<ObsRound> active_obs = getActiveObs(obs_rounds, UAV_pos, target);
+    static std::vector<ObsRound> active_obs = getActiveObs(obs_rounds, UAV_pos, target);
 
     // 步骤2：状态机逻辑
     switch (avoid_state)
@@ -307,7 +311,7 @@ Eigen::Vector2f coneAvoidanceByTangent(
             avoid_state = AvoidanceState::DECELERATE;
             decelerate_start_time = ros::Time::now();
             opt_tangent = selectOptimalTangent(active_obs, UAV_pos, target);
-            ROS_INFO("检测到激活障碍物(%d个)，进入减速状态，最优切点：(%.2f, %.2f)",
+            ROS_INFO("检测到激活障碍物(%zu个)，进入减速状态，最优切点：(%.2f, %.2f)",
                      active_obs.size(), opt_tangent.x(), opt_tangent.y());
             // 第一步先减速
             Eigen::Vector2f dir = target - UAV_pos;
@@ -351,7 +355,9 @@ Eigen::Vector2f coneAvoidanceByTangent(
         {
             // 初始化弧形飞行参数
             avoid_state = AvoidanceState::ARC_FLIGHT;
+            // ROS_INFO("问题出在下一步");
             arc_center = active_obs[0].position; // 近障碍为弧形中心
+            // ROS_INFO("问题出在上一步");
             arc_radius = (opt_tangent - arc_center).norm();
             tangent_arrive_time = ros::Time::now();
             ROS_INFO("到达切点，进入弧形避障（中心：(%.2f, %.2f)，半径：%.2f）",
@@ -361,7 +367,7 @@ Eigen::Vector2f coneAvoidanceByTangent(
         // 未到达，继续飞向切点
         Eigen::Vector2f dir = opt_tangent - UAV_pos;
         dir.normalize();
-        return UAV_pos + dir * MIN_HOVER_SPEED * 0.05f;
+        return UAV_pos + dir * MAX_SPEED * 0.5f;
     }
 
     // 状态4：弧形避障（圆锥轨迹）
@@ -453,6 +459,13 @@ bool cone_avoidance_movement(float target_x, float target_y, float target_z,
     // ================= 3. 黑箱函数调用：转换障碍物为扩增圆+切点 =================
     extern std::vector<Obstacle> obstacles; // 原有障碍物列表
     transObs(obstacles);                    // 调用黑箱函数，生成obs_rounds（含切点/安全半径）
+    static int log_count = 0;
+    if (if_debug == 1 && ++log_count % 10 == 0) {
+        for(int i=0;i<obs_rounds.size();i++){
+
+            ROS_INFO("障碍物%d:(%.2f,%.2f),r=%.2f,sr=%.2f,l(%.2f,%.2f),r(%.2f,%.2f)",i,obs_rounds[i].position.x(),obs_rounds[i].position.y(),obs_rounds[i].radius,obs_rounds[i].safe_radius,obs_rounds[i].left_point.x(),obs_rounds[i].left_point.y(),obs_rounds[i].right_point.x(),obs_rounds[i].right_point.y());
+        }
+    }    
 
     // ================= 4. 输入参数准备 =================
     Eigen::Vector2f UAV_pos = current_pos;              // 无人机当前位置
