@@ -225,29 +225,44 @@ Eigen::Vector2f selectOptimalTangent(
         float dist_right = (obs_rounds[0].right_point - target).norm();
         // 原逻辑：dist_left < dist_right → 选左；现在：dist_left > dist_right → 选左（远的）
         std::cout<<"单障碍物避障，选择切点距离目标距离：左切点="<<dist_left<<",右切点="<<dist_right<<std::endl;
-        return dist_left < dist_right ? obs_rounds[0].left_point : obs_rounds[0].right_point;
+        return dist_left > dist_right ? obs_rounds[0].left_point : obs_rounds[0].right_point;
     }
 
-    // 多障碍物：融合切点（每个障碍先选远切点，再加权融合）
-    Eigen::Vector2f fuse_tangent = Eigen::Vector2f::Zero();
-    float total_weight = 0.0f;
+    // 多障碍物：直接选全局最远切点（距离无人机）
+    Eigen::Vector2f farthest_tangent; // 全局最远切点
+    float max_dist = -1.0f;           // 最远距离（初始为负数，确保首次赋值）
+
     for (const auto &obs : obs_rounds)
     {
-        // 核心修改：每个障碍选到目标更远的切点
-        float dist_left = (obs.left_point - target).norm();
-        float dist_right = (obs.right_point - target).norm();
-        Eigen::Vector2f obs_opt = dist_left < dist_right ? obs.left_point : obs.right_point;
+        // 步骤1：给当前障碍选左/右切点中距离无人机更远的
+        float dist_left_uav = (obs.left_point - UAV_pos).norm();
+        float dist_right_uav = (obs.right_point - UAV_pos).norm();
+        Eigen::Vector2f obs_farthest = dist_left_uav > dist_right_uav ? obs.left_point : obs.right_point;
+        float obs_farthest_dist = dist_left_uav > dist_right_uav ? dist_left_uav : dist_right_uav;
 
-        // 权重逻辑保留（近障碍权重高）
-        float dist_uav_obs = (obs.position - UAV_pos).norm();
-        float weight = dist_uav_obs < 1e-3 ? 1.0f : (1.0f / dist_uav_obs);
+        // 步骤2：对比当前障碍的最远切点与全局最远切点，保留更远的
+        if (obs_farthest_dist > max_dist)
+        {
+            max_dist = obs_farthest_dist;
+            farthest_tangent = obs_farthest;
+        }
 
-        fuse_tangent += obs_opt * weight;
-        total_weight += weight;
-        ROS_INFO("两个切点(%.2f, %.2f)(%.2f, %.2f) ",
-                 obs.left_point.x(), obs.left_point.y(), obs.right_point.x(), obs.right_point.y());
+        // 保留原有日志（补充距离无人机的信息）
+        ROS_INFO("障碍切点：左(%.2f, %.2f)距无人机=%.2f | 右(%.2f, %.2f)距无人机=%.2f | 选该障碍最远切点=(%.2f,%.2f)",
+                 obs.left_point.x(), obs.left_point.y(), dist_left_uav,
+                 obs.right_point.x(), obs.right_point.y(), dist_right_uav,
+                 obs_farthest.x(), obs_farthest.y());
     }
-    return total_weight < 1e-3 ? target : (fuse_tangent / total_weight);
+
+    // 边界处理：若所有距离为0（极端情况），返回目标点
+    if (max_dist < 1e-3)
+    {
+        ROS_WARN("所有切点距离无人机过近，返回目标点");
+        return target;
+    }
+
+    ROS_INFO("多障碍全局最远切点（距无人机=%.2f）：(%.2f,%.2f)", max_dist, farthest_tangent.x(), farthest_tangent.y());
+    return farthest_tangent;
 }
 /**
  * @brief 筛选激活障碍物（碰撞锥重叠的障碍物）
