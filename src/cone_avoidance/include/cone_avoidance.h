@@ -349,7 +349,7 @@ Eigen::Vector2f coneAvoidanceByTangent(
         Eigen::Vector2f dir = target - UAV_pos;
         if (dir.norm() > 1e-3)
             dir.normalize();
-        return UAV_pos + dir * MAX_SPEED * 0.05f;
+        return UAV_pos + dir * MAX_SPEED * 0.5f;
     }
 
     // 状态2：线性减速（2秒降至MIN_HOVER_SPEED）
