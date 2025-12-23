@@ -64,7 +64,7 @@ int main(int argc, char **argv)
     nh.param<float>("time_final", time_final, 70.0f);
 
     // nh.param<float>("ALPHA", ALPHA, 2.0f);
-    // nh.param<float>("MAX_SPEED", MAX_SPEED, 1.0f);
+    nh.param<float>("MAX_SPEED", MAX_SPEED, 1.0f);
     // nh.param<float>("OBS_EPS", OBS_EPS, 0.1f);
     // nh.param<float>("KV", KV, 0.2f);
     // nh.param<float>("KN", KN, 0.05f);

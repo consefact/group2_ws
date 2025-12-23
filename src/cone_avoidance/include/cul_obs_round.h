@@ -24,7 +24,7 @@ void transObs(const std::vector<Obstacle>& obss) {
         obs_round.position = obs.position;
         obs_round.radius = obs.radius;
         // 增加 0.15m 的额外膨胀，作为缓冲区
-        obs_round.safe_radius = obs.radius + UAV_radius + 0.15f; 
+        obs_round.safe_radius = obs.radius + 1.5*UAV_radius; 
 
         Eigen::Vector2f dist_vec = obs.position - current_pos;
         float dist = dist_vec.norm();
@@ -87,6 +87,12 @@ void transObs(const std::vector<Obstacle>& obss) {
             // 让目标点稍微延伸一点，避免无人机刚到切点就急停
             obs_round.left_point += (obs_round.left_point - current_pos).normalized() * 0.5f;
             obs_round.right_point += (obs_round.right_point - current_pos).normalized() * 0.5f;
+            // 在 transObs 函数中修改
+            // 原本：best_pt = obs.position + rot * direction
+            // 修改：外推缓冲区
+            float extra_buffer = 0.4f; // 物理冗余量
+            obs_round.left_point += (obs_round.left_point - obs_round.position).normalized() * extra_buffer;
+            obs_round.right_point += (obs_round.right_point - obs_round.position).normalized() * extra_buffer;
         }
 
         obs_rounds.push_back(obs_round);

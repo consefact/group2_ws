@@ -303,114 +303,155 @@ std::vector<ObsRound> getActiveObs(
 }
 
 /**
- * @brief 核心避障函数
- * @param target 世界坐标系下的目标点 (不要再加 takeoff offset)
- * @param uav_pos 世界坐标系下的无人机位置
- * @return 世界坐标系下的期望位置 setpoint
+ * @brief 判断障碍物是否处于“碰撞锥”内（即是否阻挡了通往目标的直线路径）
+ * @param obs 障碍物结构体
+ * @param uav_pos 无人机当前位置
+ * @param target 目标位置
+ * @return true 存在碰撞风险，需规避；false 路径净空
  */
-Eigen::Vector2f coneAvoidanceByTangent(
-    const Eigen::Vector2f& target, 
-    const Eigen::Vector2f& uav_pos) 
+bool isPointInCollisionCone(const ObsRound& obs, 
+                            const Eigen::Vector2f& uav_pos, 
+                            const Eigen::Vector2f& target) 
 {
-    // 参数配置
-    const float ARRIVE_THRES = 0.5f;     // 到达切点的判定距离
-    const float RECOVERY_TIME = 1.0f;    // 回归保护时间（秒）
-    const float LOOK_AHEAD_DIST = 1.5f;  // 正常飞行时的预瞄距离
+    // 1. 计算向量
+    Eigen::Vector2f uav_to_target = target - uav_pos;
+    Eigen::Vector2f uav_to_obs = obs.position - uav_pos;
 
-    // 1. 筛选威胁障碍物 (即位于 UAV -> Target 连线方向上的障碍物)
-    // 注意：这里假设 obs_rounds 已经在外部被 transObs 更新过了
-    std::vector<ObsRound> active_threats;
-    for(const auto& obs : obs_rounds) {
-        // 简化的碰撞检测：判断圆心到线段(UAV->Target)的距离
-        // 这里仅作示例，实际可调用你原有的 collision cone 逻辑
-        Eigen::Vector2f vec_uav_obs = obs.position - uav_pos;
-        Eigen::Vector2f vec_uav_target = target - uav_pos;
-        float proj = vec_uav_obs.dot(vec_uav_target.normalized());
-        
-        if(proj > 0 && proj < vec_uav_target.norm()) { // 在前方且在目标前
-            Eigen::Vector2f perp = vec_uav_obs - vec_uav_target.normalized() * proj;
-            if(perp.norm() < obs.safe_radius) {
-                active_threats.push_back(obs);
+    float dist_to_target = uav_to_target.norm();
+    if (dist_to_target < 0.1f) return false; // 已到达目标
+
+    // 2. 投影计算：判断障碍物是否在无人机的前方
+    // 使用点积求 obs 在 uav_to_target 方向上的投影长度
+    float projection = uav_to_obs.dot(uav_to_target.normalized());
+
+    // 逻辑判定：
+    // a) projection < 0: 障碍物在无人机身后 -> 无威胁
+    // b) projection > dist_to_target: 障碍物在目标点后面 -> 无威胁
+    if (projection < 0 || projection > dist_to_target) {
+        return false;
+    }
+
+    // 3. 计算垂直距离：障碍物圆心距离“飞行直线”的最近偏移量
+    // 利用勾股定理：dist^2 = projection^2 + vertical_dist^2
+    float dist_sq = uav_to_obs.squaredNorm();
+    float vertical_dist_sq = dist_sq - (projection * projection);
+    
+    // 为了稳健，防止浮点数微小误差导致负数
+    float vertical_dist = std::sqrt(std::max(0.0f, vertical_dist_sq));
+
+    // 4. 碰撞判定：如果垂直距离小于安全半径，则在锥体内
+    return (vertical_dist < obs.safe_radius);
+}
+
+/**
+ * @brief 基于速度控制的切线避障函数
+ * @param target 世界坐标系目标点
+ * @param uav_pos 无人机当前绝对位置
+ * @param current_vel 无人机当前实际速度向量 (Eigen::Vector2f)
+ * @return Eigen::Vector2f 期望速度向量 (Target Velocity)
+ */
+
+// --- 参数配置 (建议从YAML读取) ---
+    float MAX_SPEED = 0.5f;        // 巡航速度
+    float AVOID_SPEED = 0.4f;      // 规避时的过弯速度
+    float MIN_SPEED = 0.15f;       // 减速阶段的最低速度
+    float DETECT_DIST = 4.0f;      // 减速触发距离
+    float RECOVERY_LATCH = 1.0f;   // 状态锁存时间
+
+Eigen::Vector2f coneAvoidanceByVelocity(
+    const Eigen::Vector2f& target, 
+    const Eigen::Vector2f& uav_pos,
+    const Eigen::Vector2f& current_vel) 
+{
+    // 1. 获取当前最具威胁的障碍物 (基于直线路径探测)
+    ObsRound* threat = nullptr;
+    float min_dist = 999.0f;
+    for (auto& obs : obs_rounds) {
+        if (isPointInCollisionCone(obs, uav_pos, target)) {
+            float d = (obs.position - uav_pos).norm();
+            if (d < min_dist) {
+                min_dist = d;
+                threat = &obs;
             }
         }
     }
 
-    // 2. 状态机逻辑
-    Eigen::Vector2f setpoint = target; // 默认去目标
+    Eigen::Vector2f target_vel(0, 0);
 
     switch (g_avoid_state) {
         case AvoidState::IDLE:
-            if (!active_threats.empty()) {
+            if (threat != nullptr) {
                 g_avoid_state = AvoidState::OBS_DETECTED;
                 g_state_enter_time = ros::Time::now();
-                ROS_WARN("State: IDLE -> DETECTED");
             }
+            // 目标方向速度
+            target_vel = (target - uav_pos).normalized() * MAX_SPEED;
             break;
 
         case AvoidState::OBS_DETECTED:
-            // 这里可以做减速处理，或者直接选切点进入避障
-            if (active_threats.empty()) {
+            if (threat == nullptr) {
                 g_avoid_state = AvoidState::IDLE;
+                target_vel = (target - uav_pos).normalized() * MAX_SPEED;
             } else {
-                g_avoid_state = AvoidState::AVOIDING;
-                ROS_WARN("State: DETECTED -> AVOIDING");
+                // --- 减速逻辑：距离越近，速度越慢 ---
+                float speed_factor = std::clamp((min_dist - 1.5f) / (DETECT_DIST - 1.5f), 0.0f, 1.0f);
+                float desired_speed = MIN_SPEED + (MAX_SPEED - MIN_SPEED) * speed_factor;
+                
+                target_vel = (target - uav_pos).normalized() * desired_speed;
+
+                // 当速度降到预设规避速度以下，或者距离障碍物已近（2.5m），切入规避
+                if (current_vel.norm() < AVOID_SPEED + 0.05f || min_dist < 2.5f) {
+                    g_avoid_state = AvoidState::AVOIDING;
+                    ROS_WARN("State -> AVOIDING (Velocity Control)");
+                }
             }
             break;
 
         case AvoidState::AVOIDING:
-            if (active_threats.empty()) {
-                // 障碍物突然消失（或者是噪点）
-                g_avoid_state = AvoidState::IDLE;
+            if (threat == nullptr) {
+                g_avoid_state = AvoidState::RECOVERING;
+                g_state_enter_time = ros::Time::now();
             } else {
-                // --- 策略：选择最优切点 ---
-                // 简单策略：选择距离当前朝向偏转最小的切点，或离目标更近的切点
-                // 这里假设只取第一个威胁障碍物计算（多障碍物需遍历择优）
-                const auto& obs = active_threats[0]; 
+                // --- 切线速度逻辑 ---
+                // 选择离目标更近的那个切点方向
+                float dist_l = (threat->left_point - target).norm();
+                float dist_r = (threat->right_point - target).norm();
+                Eigen::Vector2f best_pt = (dist_l < dist_r) ? threat->left_point : threat->right_point;
+
+                // 计算从当前位置指向切点的速度向量
+                target_vel = (best_pt - uav_pos).normalized() * AVOID_SPEED;
                 
-                // 简单的启发式：看哪边离目标近
-                float dist_l = (obs.left_point - target).norm();
-                float dist_r = (obs.right_point - target).norm();
-                Eigen::Vector2f best_tangent = (dist_l < dist_r) ? obs.left_point : obs.right_point;
+                // 辅助逻辑：如果无人机已经越过了障碍物（即障碍物在身后）
+                Eigen::Vector2f uav_to_obs = threat->position - uav_pos;
+                Eigen::Vector2f uav_to_target = target - uav_pos;
+                // 计算夹角的余弦值
+                float cos_theta = uav_to_obs.dot(uav_to_target) / (uav_to_obs.norm() * uav_to_target.norm());
 
-                // 持续更新目标为切点
-                setpoint = best_tangent;
-
-                // 判断是否到达切点
-                if ((uav_pos - best_tangent).norm() < ARRIVE_THRES) {
+                // cos(90度)=0, cos(110度)≈-0.34
+                // 只有当障碍物明显处于侧后方（角度 > 105度）时才退出
+                if (cos_theta < -0.25f) { 
                     g_avoid_state = AvoidState::RECOVERING;
                     g_state_enter_time = ros::Time::now();
-                    ROS_WARN("State: AVOIDING -> RECOVERING (Latch %0.1fs)", RECOVERY_TIME);
                 }
             }
             break;
 
         case AvoidState::RECOVERING:
-            // 强制继续向刚才的切线方向飞一小段，或者直接飞向目标但忽略同ID障碍物
-            // 这里我们采用：飞向目标，但强制保持状态一段时间，防止立刻又触发 IDLE->DETECTED 的死循环
-            setpoint = target;
-            
-            if ((ros::Time::now() - g_state_enter_time).toSec() > RECOVERY_TIME) {
-                // 保护期结束，检查环境
-                if (active_threats.empty()) {
+            // 恢复期：指向目标，但限制速度，防止猛冲
+            target_vel = (target - uav_pos).normalized() * AVOID_SPEED;
+
+            if ((ros::Time::now() - g_state_enter_time).toSec() > RECOVERY_LATCH) {
+                if (threat == nullptr) {
                     g_avoid_state = AvoidState::IDLE;
-                    ROS_INFO("State: RECOVERING -> IDLE");
+                    ROS_INFO("State -> IDLE (Path Clear)");
                 } else {
-                    // 如果前面还有障碍物（可能是同一个，也可能是新的），重新避障
                     g_avoid_state = AvoidState::AVOIDING;
-                    ROS_WARN("State: RECOVERING -> AVOIDING (Obstacle persists)");
                 }
             }
             break;
     }
 
-    // 3. 输出限幅与平滑（可选）
-    // 为了防止设定点太远导致飞机猛冲，可以在方向上截取一段距离
-    Eigen::Vector2f dir = (setpoint - uav_pos);
-    if (dir.norm() > LOOK_AHEAD_DIST) {
-        setpoint = uav_pos + dir.normalized() * LOOK_AHEAD_DIST;
-    }
-
-    return setpoint;
+    return target_vel;
 }
 
 bool cone_avoidance_movement(float target_x, float target_y, float target_z,
@@ -470,14 +511,20 @@ bool cone_avoidance_movement(float target_x, float target_y, float target_z,
     Eigen::Vector2f target(abs_target_x, abs_target_y); // 绝对目标点
 
     // ================= 5. 调用圆锥避障位置计算函数 =================
-    Eigen::Vector2f next_pos = coneAvoidanceByTangent(target, UAV_pos);
+    Eigen::Vector2f vel_cmd = coneAvoidanceByVelocity(target, UAV_pos, UAV_vel);
+
+    float vel_combination = hypot(vel_cmd.x(),vel_cmd.y());
+    if(vel_combination > MAX_SPEED){
+        vel_cmd.x() *= MAX_SPEED/vel_combination;
+        vel_cmd.y() *= MAX_SPEED/vel_combination;
+    }
 
     // ================= 6. 设置位置控制指令（保留原有逻辑，仅标注建议） =================
     // 【优化建议】type_mask=8+16+32+64+128+256+1024 更合理（移除2048，避免位置指令失效）
-    setpoint_raw.type_mask = 8 + 16 + 32 + 64 + 128 + 256 + 1024 + 2048;
+    setpoint_raw.type_mask = 1 + 2 /*+ 4 + 8 + 16 */+ 32 + 64 + 128 + 256 + 1024 + 2048;
     setpoint_raw.coordinate_frame = 1;                             // 局部NED坐标系
-    setpoint_raw.position.x = next_pos.x();                        // 避障计算的下一个位置X
-    setpoint_raw.position.y = next_pos.y();                        // 避障计算的下一个位置Y
+    setpoint_raw.velocity.x = vel_cmd.x();                        // 避障计算的下一个位置X
+    setpoint_raw.velocity.y = vel_cmd.y();                        // 避障计算的下一个位置Y
     setpoint_raw.position.z = target_z + init_position_z_take_off; // 固定Z高度
     setpoint_raw.yaw = target_yaw;                                 // 固定偏航角
 
@@ -499,11 +546,11 @@ bool cone_avoidance_movement(float target_x, float target_y, float target_z,
         break;
     }
     ROS_INFO(
-        "状态：%s | 当前位置：(%.2f, %.2f) | 目标点：(%.2f, %.2f) | 下一位置：(%.2f, %.2f) | 剩余时间：%.1f秒",
+        "状态：%s | 当前位置：(%.2f, %.2f) | 目标点：(%.2f, %.2f) | 当前速度：(%.2f, %.2f) | 剩余时间：%.1f秒",
         state_str.c_str(),
         UAV_pos.x(), UAV_pos.y(),
         target.x(), target.y(),
-        next_pos.x(), next_pos.y(),
+        vel_cmd.x(), vel_cmd.y(),
         time_final - elapsed_time.toSec());
 
     // ================= 8. 未满足终止条件，继续执行 =================
