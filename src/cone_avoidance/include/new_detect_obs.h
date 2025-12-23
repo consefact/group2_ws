@@ -39,7 +39,7 @@ std::vector<Obstacle> obstacles;
 const float matching_distance_threshold{1.0f};
 const int max_missed_frames{5};
 
-constexpr float height_threshold_value{0.05};
+constexpr float height_threshold_value{0.3};
 const float voxel_size_{0.04f};           // 体素滤波尺寸
 const float radius{0.5f};
 const int min_neighbors{3};
@@ -482,7 +482,8 @@ private:
             if (validateAndFitObstacle(cluster, drone_position, target_position, obstacle_center, obstacle_radius)) {
                 // 半径过滤（避免过小/过大）
                 if (obstacle_radius >= min_obstacle_radius_ && obstacle_radius <= max_obstacle_radius_
-                    && obstacle_center[0]<=drone_position[0]+3.5f && obstacle_center[0]>=drone_position[0]-1.5f
+                    && obstacle_center[0]<=drone_position[0]+6.0f 
+                    && obstacle_center[0]>=drone_position[0]-1.5f
                     && std::abs(obstacle_center[1]-drone_position[1])<=2.5f
                     ) {
                     new_detections.push_back({-1, obstacle_center, obstacle_radius, 0});

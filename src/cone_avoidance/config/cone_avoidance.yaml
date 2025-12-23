@@ -2,8 +2,7 @@ err_max : 0.3
 if_debug : 1
 
 
-target_x : 10.0  
-target_x : 10.0  
+target_x : 6.2  
 target_y : 0.0  
 
 target_yaw : 0.0

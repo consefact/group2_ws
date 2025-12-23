@@ -1,4 +1,4 @@
-#!/bin/zsh
+#!/bin/bash
 
 # 创建会话和第一个窗口
 tmux new-session -d -s ros_session -n main_nodes
@@ -23,7 +23,7 @@ tmux send-keys -t ros_session:1 'sleep 6; rostopic echo /mavros/local_position/p
 
 # Pane 3: complete_mission.launch
 tmux split-window -v -t ros_session:1
-tmux send-keys -t ros_session:1.1 'sleep 7; source ~/group2_ws/devel/setup.zsh; roslaunch cone_avoidance cone_avoidance.launch' C-m
+tmux send-keys -t ros_session:1.1 'sleep 7; source ~/group2_ws/devel/setup.bash; roslaunch cone_avoidance cone_avoidance.launch' C-m
 
 # 整理第二个窗口布局
 tmux select-layout -t ros_session:1 tiled
