@@ -139,9 +139,11 @@ bool mission_pos_cruise(float x, float y, float z, float target_yaw, float error
 float precision_land_init_position_x = 0;
 float precision_land_init_position_y = 0;
 bool precision_land_init_position_flag = false;
+bool hovor_done = false;
+bool land_done = false;
 ros::Time precision_land_last_time;
-bool precision_land();
-bool precision_land()
+bool precision_land(float err_max);
+bool precision_land(float err_max)
 {
     if (!precision_land_init_position_flag)
     {
@@ -150,17 +152,42 @@ bool precision_land()
         precision_land_last_time = ros::Time::now();
         precision_land_init_position_flag = true;
     }
-    setpoint_raw.position.x = precision_land_init_position_x;
-    setpoint_raw.position.y = precision_land_init_position_y;
-    setpoint_raw.position.z = -0.15;
-    setpoint_raw.type_mask = /*1 + 2 + 4 + 8 + 16 + 32*/ +64 + 128 + 256 + 512 /*+ 1024 + 2048*/;
-    setpoint_raw.coordinate_frame = 1;
-    if (ros::Time::now() - precision_land_last_time > ros::Duration(5.0))
+    if(fabs(local_pos.pose.pose.position.x-precision_land_init_position_x)<err_max/2 &&
+       fabs(local_pos.twist.twist.linear.x)<err_max/10 &&
+       fabs(local_pos.pose.pose.position.y-precision_land_init_position_y)<err_max/2 &&
+       fabs(local_pos.twist.twist.linear.y)<err_max/10 ||
+       ros::Time::now() - precision_land_last_time > ros::Duration(10.0))
     {
+        hovor_done = true;
+        precision_land_last_time = ros::Time::now();
+    }
+    if (!land_done && hovor_done && (fabs(local_pos.pose.pose.position.z-init_position_z_take_off)<err_max/5||ros::Time::now() - precision_land_last_time > ros::Duration(5.0)))
+    {
+        land_done =true;
+        precision_land_last_time = ros::Time::now();
+    }
+    if (land_done&&ros::Time::now()-precision_land_last_time>ros::Duration(2.0)){
         ROS_INFO("Precision landing complete.");
         precision_land_init_position_flag = false; // Reset for next landing
+        hovor_done=false;
+        land_done=false;
         return true;
     }
+
+    setpoint_raw.position.x = precision_land_init_position_x;
+    setpoint_raw.position.y = precision_land_init_position_y;
+    if(!land_done&&!hovor_done){
+        setpoint_raw.position.z = ALTITUDE;
+        ROS_INFO("悬停中");
+    }else if(!land_done){
+        setpoint_raw.position.z = (local_pos.pose.pose.position.z+0.15)*0.75-0.15;
+        ROS_INFO("降落中");
+    }else{
+        setpoint_raw.position.z = local_pos.pose.pose.position.z-0.02;
+        ROS_INFO("稳定中");
+    }
+    setpoint_raw.type_mask = /*1 + 2 + 4 +*/ 8 + 16 + 32 +64 + 128 + 256 + 512 /*+ 1024 + 2048*/;
+    setpoint_raw.coordinate_frame = 1;
     return false;
 }
 /************************************************************************

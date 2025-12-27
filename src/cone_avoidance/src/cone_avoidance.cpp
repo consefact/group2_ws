@@ -205,48 +205,9 @@ int main(int argc, char **argv)
         }
 
         case 3:{
-            // ========== 新增降落悬停变量 ==========
-            static ros::Time land_hover_start;      // 降落悬停开始时间
-            static bool is_land_hovering = false;   // 是否正在降落悬停
-            static bool is_land_hover_done = false; // 降落悬停是否完成
-
-            last_request = ros::Time::now();
-
-            // 未到达降落点：执行精确定位降落
-            if (!is_land_hover_done && !is_land_hovering)
-            {
-            if (precision_land())
-            {
-                ROS_WARN("到达降落点，开始悬停10秒！");
-                is_land_hovering = true;             // 标记开始降落悬停
-                land_hover_start = ros::Time::now(); // 记录悬停开始时间
-            }
-            else if (ros::Time::now() - last_request > ros::Duration(10.0))
-            {
-                ROS_WARN("降落超时，强制悬停10秒后结束任务！");
-                is_land_hovering = true;
-                land_hover_start = ros::Time::now();
-            }
-            }
-            // 降落悬停逻辑
-            else if (is_land_hovering)
-            {
-            // 悬停期间：保持降落点位置悬停
-            mission_pos_cruise(target_x,
-                                target_y,
-                                local_pos.pose.pose.position.z, 0, err_max);
-            mavros_setpoint_pos_pub.publish(setpoint_raw);
-            ROS_INFO("降落点悬停中，剩余时长：%.1f秒",
-                    HOVER_DURATION - (ros::Time::now() - land_hover_start).toSec());
-
-            // 悬停满10秒：结束任务
-            if (ros::Time::now() - land_hover_start > ros::Duration(HOVER_DURATION))
-            {
-                ROS_WARN("降落点悬停10秒完成，任务结束！");
-                is_land_hovering = false;
-                is_land_hover_done = true;
+            if(precision_land(err_max)){
+                ROS_WARN("精确降落完成，任务结束！");
                 mission_num = -1; // 任务结束
-            }
             }
             break;
         }
